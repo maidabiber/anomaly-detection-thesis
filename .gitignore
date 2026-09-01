@@ -1,0 +1,15 @@
+# Sirovi podaci su preveliki za git — svako ih preuzme lokalno sa Kaggle-a
+data/raw/*
+!data/raw/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Okruženje
+.venv/
+venv/
+
+# OS
+.DS_Store
