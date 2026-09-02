@@ -1,62 +1,10 @@
 """
-Module for loading raw NASA Bearing sensor signals and extracting RMS features.
+Low-level helpers for reading raw NASA Bearing sensor files.
+Used by features.py to build the actual feature table — this module
+does not compute any features itself.
 """
 import os
 import pandas as pd
-import numpy as np
-
-
-def load_rms_data(data_dir: str, columns: list[str] = None) -> pd.DataFrame:
-    """
-    Loads all files in data_dir (each file = one measurement in time),
-    computes the RMS value per bearing/channel, and returns a table
-    indexed by time.
-
-    Parameters
-    ----------
-    data_dir : str
-        Path to the folder with raw files (e.g. "data/raw/2nd_test/").
-    columns : list[str], optional
-        Column/bearing names. If not given, the number of columns in the
-        first file is used to auto-generate names ("Bearing_1", "Bearing_2", ...).
-
-    Returns
-    -------
-    pd.DataFrame
-        Table with a DatetimeIndex ("Time") and one RMS column per channel.
-    """
-    all_files = sorted(
-        path for path in _find_data_files(data_dir) if _is_sensor_file(path)
-    )
-    if not all_files:
-        raise ValueError(f"No sensor files found in {data_dir}")
-
-    first_file = pd.read_csv(all_files[0], sep='\t', header=None)
-    num_channels = first_file.shape[1]
-
-    if columns is None:
-        columns = [f"Bearing_{i+1}" for i in range(num_channels)]
-    elif len(columns) != num_channels:
-        raise ValueError(
-            f"Number of column names ({len(columns)}) does not match the "
-            f"number of channels in the file ({num_channels})."
-        )
-
-    rms_rows = []
-    for filename in all_files:
-        file_df = pd.read_csv(filename, sep='\t', header=None)
-        file_df.columns = columns
-
-        rms_row = [np.sqrt(np.mean(file_df[c] ** 2)) for c in columns]
-
-        timestamp = pd.to_datetime(os.path.basename(filename), format='%Y.%m.%d.%H.%M.%S')
-        rms_rows.append([timestamp] + rms_row)
-
-    df_rms = pd.DataFrame(rms_rows, columns=['Time'] + columns)
-    df_rms.set_index('Time', inplace=True)
-    df_rms.sort_index(inplace=True)
-
-    return df_rms
 
 
 def _find_data_files(data_dir: str) -> list[str]:
@@ -75,8 +23,45 @@ def _is_sensor_file(path: str) -> bool:
         return False
 
 
-if __name__ == "__main__":
-    # Quick test — run "python src/data_loader.py" to check it works
-    df = load_rms_data("data/raw/2nd_test/")
-    print(df.shape)
-    print(df.head())
+def list_files_and_columns(data_dir: str, columns: list[str] = None) -> tuple[list[str], list[str]]:
+    """
+    Lists all files in data_dir and resolves the column/bearing names,
+    auto-detecting the number of channels from the first file if
+    columns is not given.
+
+    Returns
+    -------
+    (all_files, columns) : tuple[list[str], list[str]]
+    """
+    all_paths = sorted(p for p in _find_data_files(data_dir) if _is_sensor_file(p))
+    if not all_paths:
+        raise ValueError(f"No sensor files found in {data_dir}")
+
+    # return paths relative to data_dir so read_raw_file(data_dir, filename) still works
+    all_files = [os.path.relpath(p, data_dir) for p in all_paths]
+
+    first_file = pd.read_csv(all_paths[0], sep='\t', header=None)
+    num_channels = first_file.shape[1]
+
+    if columns is None:
+        columns = [f"Bearing_{i+1}" for i in range(num_channels)]
+    elif len(columns) != num_channels:
+        raise ValueError(
+            f"Number of column names ({len(columns)}) does not match the "
+            f"number of channels in the file ({num_channels})."
+        )
+
+    return all_files, columns
+
+
+def read_raw_file(data_dir: str, filename: str, columns: list[str]) -> pd.DataFrame:
+    """Reads a single raw file and returns it as a DataFrame with named columns."""
+    path = filename if os.path.isabs(filename) else os.path.join(data_dir, filename)
+    file_df = pd.read_csv(path, sep='\t', header=None)
+    file_df.columns = columns
+    return file_df
+
+
+def parse_timestamp(filename: str) -> pd.Timestamp:
+    """Parses a raw filename (e.g. '2004.02.12.10.32.39') into a timestamp."""
+    return pd.to_datetime(os.path.basename(filename), format='%Y.%m.%d.%H.%M.%S')
