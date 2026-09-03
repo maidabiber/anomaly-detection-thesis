@@ -37,6 +37,33 @@ def detection_delay(first_alarm: pd.Timestamp, known_fault_start: pd.Timestamp) 
     return first_alarm - known_fault_start
 
 
+def compare_boundaries(scores: pd.Series, boundaries: list,
+                       n_std: float = 3.0, window: int = 20) -> pd.DataFrame:
+    """Score each candidate boundary, one row per boundary."""
+    rows = []
+    for boundary in boundaries:
+        mask = np.asarray(scores.index < boundary)
+        if mask.sum() == 0:
+            raise ValueError(f"No samples before boundary {boundary}")
+
+        healthy_scores = np.asarray(scores)[mask]
+        threshold = compute_threshold(healthy_scores, method="mean_std", n_std=n_std)
+
+        is_anomaly = scores > threshold
+        alarm = first_confirmed_alarm(is_anomaly, window=window)
+        healthy_end = scores.index[mask][-1]
+        fpr = false_positive_rate(is_anomaly, healthy_end)
+
+        rows.append({
+            "boundary": boundary,
+            "healthy_samples": int(mask.sum()),
+            "threshold": threshold,
+            "first_alarm": alarm,
+            "fpr": fpr,
+        })
+    return pd.DataFrame(rows)
+
+
 def precision_recall_f1(is_anomaly: pd.Series, known_fault_start: pd.Timestamp,
                          window: int = 20) -> dict:
     predicted = apply_continuity_filter(is_anomaly, window=window).fillna(False)
