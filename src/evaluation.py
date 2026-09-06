@@ -83,3 +83,28 @@ def precision_recall_f1(is_anomaly: pd.Series, known_fault_start: pd.Timestamp,
         "true_positives": tp, "false_positives": fp,
         "false_negatives": fn, "true_negatives": tn,
     }
+
+
+def identify_faulty_bearing(df_features: pd.DataFrame, n_early: int = 100, n_late: int = 100) -> dict:
+    """Growth table per bearing. Highest mean over growing features wins."""
+    growth_features = {"RMS": "rms_growth", "Kurtosis": "kurtosis_growth",
+                       "CrestFactor": "crest_factor_growth", "Peak": "peak_growth",
+                       "Std": "std_growth"}
+    vote_features = ["RMS", "Kurtosis", "Peak", "Std"]
+    bearings = sorted({col.rpartition("_")[0] for col in df_features.columns})
+
+    records = []
+    for b in bearings:
+        row = {"bearing": b}
+        for f, col_name in growth_features.items():
+            col = f"{b}_{f}"
+            early = df_features[col].iloc[:n_early].mean()
+            late = df_features[col].iloc[-n_late:].mean()
+            row[col_name] = round(late / early, 2)
+        records.append(row)
+
+    df_summary = pd.DataFrame(records).set_index("bearing")
+    vote_cols = [growth_features[f] for f in vote_features]
+    faulty_bearing = str(df_summary[vote_cols].mean(axis=1).idxmax())
+
+    return {"summary": df_summary.round(2), "faulty_bearing": faulty_bearing}
