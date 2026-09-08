@@ -45,9 +45,9 @@ def build_lstm_autoencoder(window_size, n_features, encoding_dim=8):
 
 def train_autoencoder(model, X_train, epochs=50, batch_size=32, validation_split=0.1, seed=42, verbose=0):
     set_seed(seed)
-    model.fit(X_train, X_train, epochs=epochs, batch_size=batch_size,
-              validation_split=validation_split, shuffle=True, verbose=verbose)
-    return model
+    history = model.fit(X_train, X_train, epochs=epochs, batch_size=batch_size,
+                        validation_split=validation_split, shuffle=True, verbose=verbose)
+    return model, history
 
 
 def reconstruction_error(model, X):
