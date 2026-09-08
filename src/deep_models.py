@@ -66,8 +66,8 @@ def run_multiple(build_fn, X_train, X_all, error_fn=reconstruction_error, n_runs
     for i in range(n_runs):
         seed = seed_start + i
         model = build_fn()
-        train_autoencoder(model, X_train, epochs=epochs, batch_size=batch_size,
-                           validation_split=validation_split, seed=seed)
+        model, _ = train_autoencoder(model, X_train, epochs=epochs, batch_size=batch_size,
+                                      validation_split=validation_split, seed=seed)
         errors = error_fn(model, X_all)
         all_errors.append(errors)
 

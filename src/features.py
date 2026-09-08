@@ -1,7 +1,7 @@
 """
 Module for extracting vibration features per bearing/channel.
 Time domain: RMS, kurtosis, crest factor, peak, skewness, standard deviation.
-Frequency domain (rfft, normalized frequencies, no sampling rate assumed):
+Frequency domain (rfft, real Hz using 20kHz sample rate):
 spectral centroid, high band power ratio, spectral peak.
 Reuses file-reading helpers from data_loader.py instead of re-implementing them.
 """
@@ -51,12 +51,14 @@ def extract_features(data_dir: str, columns: list[str] = None) -> pd.DataFrame:
             row[f"{c}_Skewness"] = skew(signal)
             row[f"{c}_Std"] = np.std(signal)
 
-            spectrum = np.abs(np.fft.rfft(signal)) ** 2
+            SAMPLE_RATE_HZ = 20000  # per advisor's email: ~20480 samples at 20kHz per file
+            signal_centered = signal - np.mean(signal)
+            spectrum = np.abs(np.fft.rfft(signal_centered)) ** 2
             total_power = np.sum(spectrum)
-            freqs = np.linspace(0, 1, len(spectrum))
+            freqs = np.fft.rfftfreq(len(signal_centered), d=1 / SAMPLE_RATE_HZ)
             if total_power > 0:
                 row[f"{c}_SpecCentroid"] = float(np.sum(freqs * spectrum) / total_power)
-                row[f"{c}_HighFreqRatio"] = float(np.sum(spectrum[freqs > 0.5]) / total_power)
+                row[f"{c}_HighFreqRatio"] = float(np.sum(spectrum[freqs > freqs.max() / 2]) / total_power)
                 row[f"{c}_SpecPeak"] = float(np.max(spectrum) / total_power)
             else:
                 row[f"{c}_SpecCentroid"] = 0.0
