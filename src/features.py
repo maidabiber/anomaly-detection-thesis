@@ -1,6 +1,8 @@
 """
-Module for extracting time-domain vibration features per bearing/channel:
-RMS, kurtosis, crest factor, peak, skewness, and standard deviation.
+Module for extracting vibration features per bearing/channel.
+Time domain: RMS, kurtosis, crest factor, peak, skewness, standard deviation.
+Frequency domain (rfft, normalized frequencies, no sampling rate assumed):
+spectral centroid, high band power ratio, spectral peak.
 Reuses file-reading helpers from data_loader.py instead of re-implementing them.
 """
 import numpy as np
@@ -27,7 +29,8 @@ def extract_features(data_dir: str, columns: list[str] = None) -> pd.DataFrame:
     pd.DataFrame
         Table with a DatetimeIndex ("Time") and, for each bearing, columns:
         {bearing}_RMS, {bearing}_Kurtosis, {bearing}_CrestFactor,
-        {bearing}_Peak, {bearing}_Skewness, {bearing}_Std
+        {bearing}_Peak, {bearing}_Skewness, {bearing}_Std,
+        {bearing}_SpecCentroid, {bearing}_HighFreqRatio, {bearing}_SpecPeak
     """
     all_files, columns = list_files_and_columns(data_dir, columns)
 
@@ -47,6 +50,18 @@ def extract_features(data_dir: str, columns: list[str] = None) -> pd.DataFrame:
             row[f"{c}_Peak"] = peak
             row[f"{c}_Skewness"] = skew(signal)
             row[f"{c}_Std"] = np.std(signal)
+
+            spectrum = np.abs(np.fft.rfft(signal)) ** 2
+            total_power = np.sum(spectrum)
+            freqs = np.linspace(0, 1, len(spectrum))
+            if total_power > 0:
+                row[f"{c}_SpecCentroid"] = float(np.sum(freqs * spectrum) / total_power)
+                row[f"{c}_HighFreqRatio"] = float(np.sum(spectrum[freqs > 0.5]) / total_power)
+                row[f"{c}_SpecPeak"] = float(np.max(spectrum) / total_power)
+            else:
+                row[f"{c}_SpecCentroid"] = 0.0
+                row[f"{c}_HighFreqRatio"] = 0.0
+                row[f"{c}_SpecPeak"] = 0.0
 
         row["Time"] = parse_timestamp(filename)
         rows.append(row)
