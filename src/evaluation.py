@@ -64,6 +64,19 @@ def compare_boundaries(scores: pd.Series, boundaries: list,
     return pd.DataFrame(rows)
 
 
+def alarm_and_fpr(scores_series: pd.Series, threshold: float,
+                    train_end: pd.Timestamp, val_end: pd.Timestamp,
+                    window: int = 20) -> tuple[str | None, float, float]:
+    """Shared tail of every experiment: alarm plus train and validation FPR."""
+    is_anomaly = scores_series > threshold
+    alarm = first_confirmed_alarm(is_anomaly, window=window)
+    fpr_train = float(is_anomaly[scores_series.index <= train_end].mean())
+    fpr_val = float(is_anomaly[(scores_series.index > train_end)
+                               & (scores_series.index <= val_end)].mean())
+    alarm_str = alarm.strftime("%Y-%m-%d %H:%M:%S") if alarm is not None else None
+    return alarm_str, round(fpr_train, 4), round(fpr_val, 4)
+
+
 def precision_recall_f1(is_anomaly: pd.Series, known_fault_start: pd.Timestamp,
                          window: int = 20) -> dict:
     predicted = apply_continuity_filter(is_anomaly, window=window).fillna(False)
