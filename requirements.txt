@@ -1,0 +1,10 @@
+# Reference environment: CPython 3.9, Windows 10/11
+# Pinned versions reproduce the thesis numbers. Newer scikit-learn or
+# TensorFlow builds may shift single-feature alarms by minutes (see the
+# PCA reproducibility note in analyze_2nd_test.ipynb).
+numpy==2.0.2
+pandas==2.3.3
+scipy==1.13.1
+scikit-learn==1.6.1
+tensorflow==2.20.0
+matplotlib==3.9.4
