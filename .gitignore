@@ -2,6 +2,9 @@
 data/raw/*
 !data/raw/.gitkeep
 
+# Generisani keš se pravi lokalno za par sekundi
+data/processed/*
+
 # Python
 __pycache__/
 *.pyc
