@@ -91,15 +91,17 @@ def reconstruction_error_images(model, X_images):
 
 
 def run_multiple(build_fn, X_train, X_all, error_fn=reconstruction_error, n_runs=5, seed_start=0,
-                  epochs=50, batch_size=32, validation_split=0.1):
+                  epochs=50, batch_size=32, validation_split=0.1, method="mean"):
     all_errors = []
     for i in range(n_runs):
         seed = seed_start + i
         model = build_fn()
         model, _ = train_autoencoder(model, X_train, epochs=epochs, batch_size=batch_size,
-                                      validation_split=validation_split, seed=seed)
+                           validation_split=validation_split, seed=seed)
         errors = error_fn(model, X_all)
         all_errors.append(errors)
 
     all_errors = np.array(all_errors)
+    if method == "median":
+        return np.median(all_errors, axis=0), all_errors.std(axis=0)
     return all_errors.mean(axis=0), all_errors.std(axis=0)
