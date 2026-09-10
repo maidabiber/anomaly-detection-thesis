@@ -36,7 +36,8 @@ def run_classical_suite(models, X_healthy_train, X_all, X_healthy_val,
         alarm = first_confirmed_alarm(is_anomaly, window=20)
         fpr_train = float(is_anomaly[index <= train_end].mean())
         fpr_val = float(is_anomaly[(index > train_end) & (index <= val_end)].mean())
-        results[name] = {"scores": scores_series, "val_mean": val_mean, "val_std": val_std,
+        results[name] = {"scores": scores_series, "val_scores": np.asarray(val_scores),
+                         "val_mean": val_mean, "val_std": val_std,
                          "threshold": float(threshold), "alarm": alarm,
                          "fpr_train": fpr_train, "fpr_val": fpr_val}
 
