@@ -186,12 +186,10 @@ def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_
         if verbose:
             print(f"Training {name} (3 runs)...", flush=True)
         build_fn = lambda hl=hidden_layers: build_autoencoder(input_dim, hl)
-        mean_full, _ = run_multiple(build_fn, X_healthy_train, X_all,
-                                    error_fn=reconstruction_error,
-                                    n_runs=3, epochs=30, batch_size=32)
-        mean_val, _ = run_multiple(build_fn, X_healthy_train, X_healthy_val,
-                                   error_fn=reconstruction_error,
-                                   n_runs=3, epochs=30, batch_size=32)
+        (mean_full, _), (mean_val, _) = run_multiple(
+            build_fn, X_healthy_train, X_all,
+            error_fn=reconstruction_error, X_val=X_healthy_val,
+            n_runs=3, epochs=30, batch_size=32)
         val_mean = float(np.mean(mean_val))
         val_std = float(np.std(mean_val))
         scores_series = pd.Series(mean_full, index=index)
@@ -214,12 +212,10 @@ def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_
     if verbose:
         print("Training LSTM_AE (3 runs, median)...", flush=True)
     build_lstm_fn = lambda: build_lstm_autoencoder(window_size, input_dim, encoding_dim=8)
-    lstm_full, _ = run_multiple(build_lstm_fn, X_healthy_windows, X_all_windows,
-                                error_fn=reconstruction_error_lstm, method="median",
-                                n_runs=3, epochs=30, batch_size=32)
-    lstm_val, _ = run_multiple(build_lstm_fn, X_healthy_windows, X_val_windows,
-                               error_fn=reconstruction_error_lstm, method="median",
-                               n_runs=3, epochs=30, batch_size=32)
+    (lstm_full, _), (lstm_val, _) = run_multiple(
+        build_lstm_fn, X_healthy_windows, X_all_windows,
+        error_fn=reconstruction_error_lstm, X_val=X_val_windows, method="median",
+        n_runs=3, epochs=30, batch_size=32)
     val_mean = float(np.mean(lstm_val))
     val_std = float(np.std(lstm_val))
     lstm_series = pd.Series(lstm_full, index=lstm_index)
