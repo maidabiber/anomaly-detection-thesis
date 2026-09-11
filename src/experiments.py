@@ -136,3 +136,19 @@ def compare_scalers(models, scalers: dict[str, type], df: pd.DataFrame,
                                 label=sname):
             rows.append({"scaler": sname, **row})
     return pd.DataFrame(rows)
+
+
+def format_classical_summary(df: pd.DataFrame):
+    display_df = df.copy()
+    if "first_alarm" in display_df.columns:
+        display_df["first_alarm"] = display_df["first_alarm"].apply(
+            lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if isinstance(x, pd.Timestamp) else x
+        )
+    return display_df.style.format({
+        "val_mean": "{:.5f}", "val_std": "{:.5f}",
+        "threshold": "{:.5f}", "fpr_train": "{:.4f}", "fpr_val": "{:.4f}"
+    })
+
+
+def format_deep_summary(df: pd.DataFrame):
+    return format_classical_summary(df)
