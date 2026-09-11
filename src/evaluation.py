@@ -37,6 +37,37 @@ def detection_delay(first_alarm: pd.Timestamp, known_fault_start: pd.Timestamp) 
     return first_alarm - known_fault_start
 
 
+def classify_alarm(first_alarm: pd.Timestamp | None, known_fault_start: pd.Timestamp,
+                   burn_in_end: pd.Timestamp | None = None) -> dict:
+    """Label one confirmed alarm against the reference fault onset.
+
+    Reuses detection_delay; earlier is NOT better: any confirmed alarm
+    strictly before the onset is premature (false), even if it is the
+    earliest in a table. Alarms inside the startup burn-in window are
+    labelled startup artefact. Returns label + delay (None unless true).
+    """
+    if first_alarm is None:
+        return {"label": "missed", "delay": None}
+    if burn_in_end is not None and first_alarm <= burn_in_end:
+        return {"label": "startup_artefact (false)", "delay": None}
+    if first_alarm < known_fault_start:
+        return {"label": "premature (false)", "delay": None}
+    return {"label": "true", "delay": detection_delay(first_alarm, known_fault_start)}
+
+
+def score_detection(is_anomaly: pd.Series, known_fault_start: pd.Timestamp,
+                    burn_in_end: pd.Timestamp | None = None, window: int = 20) -> dict:
+    """Precision/recall/F1 against the onset, ignoring startup burn-in.
+
+    Thin wrapper around precision_recall_f1: drops samples at or before
+    burn_in_end before scoring, so day-one transients do not inflate FP.
+    """
+    scored = is_anomaly
+    if burn_in_end is not None:
+        scored = scored[scored.index > burn_in_end]
+    return precision_recall_f1(scored, known_fault_start, window=window)
+
+
 def compare_boundaries(scores: pd.Series, boundaries: list,
                        n_std: float = 3.0, window: int = 20) -> pd.DataFrame:
     """Score each candidate boundary, one row per boundary."""
