@@ -166,6 +166,49 @@ def compare_scalers(models, scalers: dict[str, type], df: pd.DataFrame,
     return pd.DataFrame(rows)
 
 
+def deep_boundary_sensitivity(boundaries: dict[str, pd.Timestamp], feature_cols: list[str],
+                                df: pd.DataFrame, val_fraction: float = 0.2, verbose=False) -> pd.DataFrame:
+    """Same as boundary_sensitivity but for deep suite (3 runs, median for LSTM)."""
+    from src.preprocessing import split_healthy, split_train_val, scale_features
+    rows = []
+    for label, b in boundaries.items():
+        if verbose:
+            print(f"Boundary {label}: training deep suite...", flush=True)
+        df_h = split_healthy(df[feature_cols], b)
+        df_tr, df_va = split_train_val(df_h, val_fraction=val_fraction)
+        Xtr, Xa_, scaler = scale_features(df_tr, df[feature_cols])
+        Xva = scaler.transform(df_va)
+        train_end, val_end = df_tr.index[-1], df_h.index[-1]
+        input_dim = Xtr.shape[1]
+        summary, _ = run_deep_suite(Xtr, Xa_, Xva, df.index, train_end, val_end, input_dim, verbose=False)
+        for _, row in summary.iterrows():
+            rows.append({"boundary_label": label, "model": row["model"],
+                         "threshold": row["threshold"], "alarm": row["first_alarm"],
+                         "fpr_train": row["fpr_train"], "fpr_val": row["fpr_val"]})
+    return pd.DataFrame(rows)
+
+
+def deep_compare_scalers(scalers: dict[str, type], df: pd.DataFrame,
+                         df_healthy_train: pd.DataFrame, df_healthy_val: pd.DataFrame,
+                         train_end, val_end, verbose=False) -> pd.DataFrame:
+    """Same as compare_scalers but for deep suite."""
+    rows = []
+    for sname, scaler_cls in scalers.items():
+        if verbose:
+            print(f"Scaler {sname}: training deep suite...", flush=True)
+        scaler = scaler_cls()
+        Xtr = scaler.fit_transform(df_healthy_train)
+        Xa_ = scaler.transform(df)
+        Xva = scaler.transform(df_healthy_val)
+        input_dim = Xtr.shape[1]
+        summary, _ = run_deep_suite(Xtr, Xa_, Xva, df.index, train_end, val_end, input_dim, verbose=False)
+        for _, row in summary.iterrows():
+            rows.append({"scaler": sname, "model": row["model"],
+                         "threshold": row["threshold"], "alarm": row["first_alarm"],
+                         "fpr_train": row["fpr_train"], "fpr_val": row["fpr_val"]})
+    return pd.DataFrame(rows)
+
+
 def format_classical_summary(df: pd.DataFrame):
     display_df = df.copy()
     if "first_alarm" in display_df.columns:
@@ -176,6 +219,49 @@ def format_classical_summary(df: pd.DataFrame):
         "val_mean": "{:.5f}", "val_std": "{:.5f}",
         "threshold": "{:.5f}", "fpr_train": "{:.4f}", "fpr_val": "{:.4f}"
     })
+
+
+def compare_joint_24vs36(models, df: pd.DataFrame, df_healthy_train: pd.DataFrame,
+                         df_healthy_val: pd.DataFrame, train_end, val_end, verbose=False):
+    """
+    Joint results on 24 time vs 36 with spectral, plus difference in first alarm.
+    Wrapper around run_classical_suite that reuses OLD6 definition.
+    Displays three tables and returns (summary_36, summary_24, diff_df).
+    """
+    from src.preprocessing import scale_features
+
+    OLD6 = ["RMS", "Kurtosis", "CrestFactor", "Peak", "Skewness", "Std"]
+    old_cols = [c for c in df.columns if any(c.endswith("_" + f) for f in OLD6)]
+
+    print("Joint results on all 36 with spectral:")
+    X_healthy_train, X_all, scaler = scale_features(df_healthy_train, df)
+    X_healthy_val = scaler.transform(df_healthy_val)
+    summary_36, results_36 = run_classical_suite(
+        models, X_healthy_train, X_all, X_healthy_val, df.index, train_end, val_end, verbose=verbose)
+    display(format_classical_summary(summary_36))
+
+    Xtr_old, Xa_old, sc_old = scale_features(df_healthy_train[old_cols], df[old_cols])
+    Xva_old = sc_old.transform(df_healthy_val[old_cols])
+    print("Joint results on old 24 time features:")
+    summary_24, results_24 = run_classical_suite(
+        models, Xtr_old, Xa_old, Xva_old, df.index, train_end, val_end, verbose=verbose)
+    display(format_classical_summary(summary_24))
+
+    print("Difference in first alarm (positive hours = 36 earlier):")
+    diff_rows = []
+    for name, _, _ in models:
+        a24 = results_24[name]["alarm"] if name in results_24 else None
+        a36 = results_36[name]["alarm"] if name in results_36 else None
+        gain = None
+        if a24 is not None and a36 is not None:
+            gain = round((a24 - a36).total_seconds() / 3600, 1)
+        diff_rows.append({"model": name, "alarm_24": _alarm_str(a24), "alarm_36": _alarm_str(a36),
+                          "hours_earlier_36": gain,
+                          "fpr_24": round(results_24[name]["fpr_val"], 4) if name in results_24 else None,
+                          "fpr_36": round(results_36[name]["fpr_val"], 4) if name in results_36 else None})
+    diff_df = pd.DataFrame(diff_rows)
+    display(diff_df)
+    return summary_36, summary_24, diff_df
 
 
 def format_deep_summary(df: pd.DataFrame):
