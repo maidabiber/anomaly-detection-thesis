@@ -152,3 +152,93 @@ def format_classical_summary(df: pd.DataFrame):
 
 def format_deep_summary(df: pd.DataFrame):
     return format_classical_summary(df)
+
+
+def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_end,
+                   input_dim, window_size=10, verbose=False):
+    """
+    Train 3 dense autoencoders + 1 LSTM autoencoder on healthy train,
+    threshold on validation, alarm/FPR on full timeline.
+    Handles TF determinism and LSTM median aggregation internally.
+    Returns (summary DataFrame, results dict) like run_classical_suite.
+    """
+    import os
+    os.environ["TF_DETERMINISTIC_OPS"] = "1"
+    import tensorflow as tf
+    try:
+        tf.config.threading.set_inter_op_parallelism_threads(1)
+        tf.config.threading.set_intra_op_parallelism_threads(1)
+    except RuntimeError:
+        pass
+
+    from src.deep_models import (
+        build_autoencoder, build_lstm_autoencoder, make_windows,
+        run_multiple, reconstruction_error, reconstruction_error_lstm,
+    )
+
+    results = {}
+    architectures = {
+        "AE_1layer": [8],
+        "AE_2layer": [12, 6],
+        "AE_3layer": [16, 8, 4],
+    }
+    for name, hidden_layers in architectures.items():
+        if verbose:
+            print(f"Training {name} (3 runs)...", flush=True)
+        build_fn = lambda hl=hidden_layers: build_autoencoder(input_dim, hl)
+        mean_full, _ = run_multiple(build_fn, X_healthy_train, X_all,
+                                    error_fn=reconstruction_error,
+                                    n_runs=3, epochs=30, batch_size=32)
+        mean_val, _ = run_multiple(build_fn, X_healthy_train, X_healthy_val,
+                                   error_fn=reconstruction_error,
+                                   n_runs=3, epochs=30, batch_size=32)
+        val_mean = float(np.mean(mean_val))
+        val_std = float(np.std(mean_val))
+        scores_series = pd.Series(mean_full, index=index)
+        threshold = compute_threshold(mean_val, method="mean_std", n_std=3.0)
+        is_anomaly = scores_series > threshold
+        alarm = first_confirmed_alarm(is_anomaly, window=20)
+        fpr_train = float(is_anomaly[index <= train_end].mean())
+        fpr_val = float(is_anomaly[(index > train_end) & (index <= val_end)].mean())
+        results[name] = {"scores": scores_series, "val_mean": val_mean, "val_std": val_std,
+                         "threshold": float(threshold), "alarm": alarm,
+                         "fpr_train": fpr_train, "fpr_val": fpr_val}
+
+    # LSTM on windowed data
+    if verbose:
+        print("Building LSTM windows...", flush=True)
+    X_healthy_windows = make_windows(X_healthy_train, window_size)
+    X_all_windows = make_windows(X_all, window_size)
+    X_val_windows = make_windows(X_healthy_val, window_size)
+    lstm_index = index[window_size - 1:]
+    if verbose:
+        print("Training LSTM_AE (3 runs, median)...", flush=True)
+    build_lstm_fn = lambda: build_lstm_autoencoder(window_size, input_dim, encoding_dim=8)
+    lstm_full, _ = run_multiple(build_lstm_fn, X_healthy_windows, X_all_windows,
+                                error_fn=reconstruction_error_lstm, method="median",
+                                n_runs=3, epochs=30, batch_size=32)
+    lstm_val, _ = run_multiple(build_lstm_fn, X_healthy_windows, X_val_windows,
+                               error_fn=reconstruction_error_lstm, method="median",
+                               n_runs=3, epochs=30, batch_size=32)
+    val_mean = float(np.mean(lstm_val))
+    val_std = float(np.std(lstm_val))
+    lstm_series = pd.Series(lstm_full, index=lstm_index)
+    threshold = compute_threshold(lstm_val, method="mean_std", n_std=3.0)
+    is_anomaly = lstm_series > threshold
+    alarm = first_confirmed_alarm(is_anomaly, window=20)
+    fpr_train = float(is_anomaly[(lstm_index <= train_end)].mean())
+    fpr_val = float(is_anomaly[(lstm_index > train_end) & (lstm_index <= index[-1])].mean())
+    results["LSTM_AE"] = {"scores": lstm_series, "val_mean": val_mean, "val_std": val_std,
+                          "threshold": float(threshold), "alarm": alarm,
+                          "fpr_train": fpr_train, "fpr_val": fpr_val}
+
+    summary = pd.DataFrame([{
+        "model": name,
+        "val_mean": r["val_mean"],
+        "val_std": r["val_std"],
+        "threshold": r["threshold"],
+        "first_alarm": r["alarm"],
+        "fpr_train": r["fpr_train"],
+        "fpr_val": r["fpr_val"],
+    } for name, r in results.items()]).sort_values("model").reset_index(drop=True)
+    return summary, results
