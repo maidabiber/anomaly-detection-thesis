@@ -242,3 +242,31 @@ def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_
         "fpr_val": r["fpr_val"],
     } for name, r in results.items()]).sort_values("model").reset_index(drop=True)
     return summary, results
+
+
+def compare_threshold_rules(models, X_healthy_train, X_all, X_healthy_val,
+                            index, train_end, val_end, verbose=False):
+    """
+    Same validation scores, three threshold rules: mean+3std, percentile 99.5, max*1.5.
+    Returns long table with model, rule, threshold, alarm, fpr.
+    """
+    thr_rules = {
+        "mean+3std": lambda v: compute_threshold(v, method="mean_std", n_std=3.0),
+        "percentile_99.5": lambda v: compute_threshold(v, method="percentile", percentile=99.5),
+        "max_x1.5": lambda v: float(np.max(v) * 1.5),
+    }
+    rows = []
+    for name, fit_fn, score_fn in models:
+        if verbose:
+            print(f"Training {name}...", flush=True)
+        model = fit_fn(X_healthy_train)
+        full = pd.Series(score_fn(model, X_all), index=index)
+        val = score_fn(model, X_healthy_val)
+        for rname, rfn in thr_rules.items():
+            t = rfn(val)
+            is_an = full > t
+            alarm = first_confirmed_alarm(is_an, window=20)
+            fpr = float(is_an[(full.index > train_end) & (full.index <= val_end)].mean())
+            rows.append({"model": name, "rule": rname, "threshold": round(float(t), 5),
+                         "alarm": _alarm_str(alarm), "fpr": round(fpr, 4)})
+    return pd.DataFrame(rows)
