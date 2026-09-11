@@ -258,6 +258,49 @@ def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_
     return summary, results
 
 
+def plot_training_curves(X_healthy_train, X_healthy_val, input_dim, window_size=10, spectro_data=None):
+    """
+    Train one model per architecture with history, plot train vs validation loss.
+    If spectro_data is (Xtr_spec, Xva_spec), adds CNN as 5th panel.
+    Returns matplotlib figure, no training logic in notebooks.
+    """
+    import matplotlib.pyplot as plt
+    from src.deep_models import train_autoencoder, build_autoencoder, build_lstm_autoencoder, build_cnn_autoencoder, make_windows
+
+    configs = [
+        ("AE_1layer", lambda: build_autoencoder(input_dim, [8]), (X_healthy_train, X_healthy_val)),
+        ("AE_2layer", lambda: build_autoencoder(input_dim, [12, 6]), (X_healthy_train, X_healthy_val)),
+        ("AE_3layer", lambda: build_autoencoder(input_dim, [16, 8, 4]), (X_healthy_train, X_healthy_val)),
+        ("LSTM_AE", lambda: build_lstm_autoencoder(window_size, input_dim, encoding_dim=config.ENCODING_DIM),
+         (make_windows(X_healthy_train, window_size), make_windows(X_healthy_val, window_size))),
+    ]
+    if spectro_data is not None:
+        Xtr_spec, Xva_spec = spectro_data
+        configs.append(("CNN", lambda: build_cnn_autoencoder(64, 64), (Xtr_spec, Xva_spec)))
+
+    n = len(configs)
+    cols = 2
+    rows = (n + 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(14, 5 * rows))
+    axes = axes.flat if n > 1 else [axes]
+    for ax, (name, build, data) in zip(axes, configs):
+        Xtr_c, Xva_c = data
+        m, hist = train_autoencoder(build(), Xtr_c, epochs=config.EPOCHS, batch_size=config.BATCH_SIZE, seed=0)
+        print(f"{name}: final train loss {hist.history['loss'][-1]:.5f}, val loss {hist.history['val_loss'][-1]:.5f}")
+        ax.plot(hist.history["loss"], label="train")
+        ax.plot(hist.history["val_loss"], label="validation")
+        ax.set_title(name)
+        ax.set_xlabel("Epoch")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+    for ax in axes[len(configs):]:
+        ax.axis("off")
+    plt.suptitle("Learning curves per architecture")
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
 def compare_threshold_rules(models, X_healthy_train, X_all, X_healthy_val,
                             index, train_end, val_end, verbose=False):
     """
