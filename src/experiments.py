@@ -7,11 +7,24 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+import src.config as config
 from src.evaluation import compute_threshold, first_confirmed_alarm, false_positive_rate
 
 
 def _alarm_str(alarm) -> str | None:
     return alarm.strftime("%Y-%m-%d %H:%M:%S") if alarm is not None else None
+
+
+def _threshold_alarm_fpr(scores_series: pd.Series, val_scores, index, train_end, val_end):
+    """Shared threshold (mean+3std), alarm (window) and FPRs. One place, used everywhere."""
+    val_mean = float(np.mean(val_scores))
+    val_std = float(np.std(val_scores))
+    threshold = compute_threshold(val_scores, method="mean_std", n_std=config.THRESHOLD_N_STD)
+    is_anomaly = scores_series > threshold
+    alarm = first_confirmed_alarm(is_anomaly, window=config.CONTINUITY_WINDOW)
+    fpr_train = float(is_anomaly[index <= train_end].mean())
+    fpr_val = float(is_anomaly[(index > train_end) & (index <= val_end)].mean())
+    return threshold, alarm, fpr_train, fpr_val, val_mean, val_std
 
 
 def run_classical_suite(models, X_healthy_train, X_all, X_healthy_val,
@@ -28,14 +41,9 @@ def run_classical_suite(models, X_healthy_train, X_all, X_healthy_val,
         model = fit_fn(X_healthy_train)
         full_scores = score_fn(model, X_all)
         val_scores = score_fn(model, X_healthy_val)
-        val_mean = float(np.mean(val_scores))
-        val_std = float(np.std(val_scores))
         scores_series = pd.Series(full_scores, index=index)
-        threshold = compute_threshold(val_scores, method="mean_std", n_std=3.0)
-        is_anomaly = scores_series > threshold
-        alarm = first_confirmed_alarm(is_anomaly, window=20)
-        fpr_train = float(is_anomaly[index <= train_end].mean())
-        fpr_val = float(is_anomaly[(index > train_end) & (index <= val_end)].mean())
+        threshold, alarm, fpr_train, fpr_val, val_mean, val_std = _threshold_alarm_fpr(
+            scores_series, val_scores, index, train_end, val_end)
         results[name] = {"scores": scores_series, "val_scores": np.asarray(val_scores),
                          "val_mean": val_mean, "val_std": val_std,
                          "threshold": float(threshold), "alarm": alarm,
@@ -62,11 +70,8 @@ def _score_setup(models, Xtr, Xa_, Xva, index, train_end, val_end,
         model = fit_fn(Xtr)
         full = pd.Series(score_fn(model, Xa_), index=index)
         val = score_fn(model, Xva)
-        threshold = compute_threshold(val, method="mean_std", n_std=3.0)
-        is_an = full > threshold
-        alarm = first_confirmed_alarm(is_an, window=20)
-        fpr_train = float(is_an[(index <= train_end)].mean())
-        fpr_val = float(is_an[(index > train_end) & (index <= val_end)].mean())
+        threshold, alarm, fpr_train, fpr_val, _, _ = _threshold_alarm_fpr(
+            full, val, index, train_end, val_end)
         rows.append({"model": name, "threshold": float(threshold),
                      "alarm": _alarm_str(alarm),
                      "fpr_train": round(fpr_train, 4), "fpr_val": round(fpr_val, 4)})
@@ -94,6 +99,29 @@ def compare_column_setups(models, setups: dict[str, list[str]], df: pd.DataFrame
         for row in _score_setup(models, Xtr, Xa_, Xva, df.index, train_end, val_end):
             rows.append({"setup": setup, **row})
     return pd.DataFrame(rows)
+
+
+def compare_feature_setups(models, df: pd.DataFrame, df_healthy_train: pd.DataFrame,
+                           df_healthy_val: pd.DataFrame, train_end, val_end,
+                           feature_types: list[str] | None = None, verbose=False) -> pd.DataFrame:
+    """
+    Joint (all_24 vs all_36) plus per-feature setups in one table.
+    Uses OLD6 (24 time features) and all 36 (time+spectral) as two joints,
+    then one entry per feature type. Wrapper around compare_column_setups.
+    """
+    if feature_types is None:
+        feature_types = ["RMS", "Kurtosis", "CrestFactor", "Peak", "Skewness", "Std",
+                         "SpecCentroid", "HighFreqRatio", "SpecPeak"]
+    OLD6 = ["RMS", "Kurtosis", "CrestFactor", "Peak", "Skewness", "Std"]
+    old_cols = [c for c in df.columns if any(c.endswith("_" + f) for f in OLD6)]
+    setups = {
+        "all_24": old_cols,
+        "all_36": list(df.columns),
+    }
+    for feat in feature_types:
+        setups[feat] = [c for c in df.columns if c.endswith("_" + feat)]
+    return compare_column_setups(models, setups, df, df_healthy_train, df_healthy_val,
+                                 train_end, val_end, verbose=verbose)
 
 
 def boundary_sensitivity(models, boundaries: dict[str, pd.Timestamp], feature_cols: list[str],
@@ -189,15 +217,10 @@ def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_
         (mean_full, _), (mean_val, _) = run_multiple(
             build_fn, X_healthy_train, X_all,
             error_fn=reconstruction_error, X_val=X_healthy_val,
-            n_runs=3, epochs=30, batch_size=32)
-        val_mean = float(np.mean(mean_val))
-        val_std = float(np.std(mean_val))
+            n_runs=config.N_RUNS, epochs=config.EPOCHS, batch_size=config.BATCH_SIZE)
         scores_series = pd.Series(mean_full, index=index)
-        threshold = compute_threshold(mean_val, method="mean_std", n_std=3.0)
-        is_anomaly = scores_series > threshold
-        alarm = first_confirmed_alarm(is_anomaly, window=20)
-        fpr_train = float(is_anomaly[index <= train_end].mean())
-        fpr_val = float(is_anomaly[(index > train_end) & (index <= val_end)].mean())
+        threshold, alarm, fpr_train, fpr_val, val_mean, val_std = _threshold_alarm_fpr(
+            scores_series, mean_val, index, train_end, val_end)
         results[name] = {"scores": scores_series, "val_mean": val_mean, "val_std": val_std,
                          "threshold": float(threshold), "alarm": alarm,
                          "fpr_train": fpr_train, "fpr_val": fpr_val}
@@ -215,15 +238,10 @@ def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_
     (lstm_full, _), (lstm_val, _) = run_multiple(
         build_lstm_fn, X_healthy_windows, X_all_windows,
         error_fn=reconstruction_error_lstm, X_val=X_val_windows, method="median",
-        n_runs=3, epochs=30, batch_size=32)
-    val_mean = float(np.mean(lstm_val))
-    val_std = float(np.std(lstm_val))
+        n_runs=config.N_RUNS, epochs=config.EPOCHS, batch_size=config.BATCH_SIZE)
     lstm_series = pd.Series(lstm_full, index=lstm_index)
-    threshold = compute_threshold(lstm_val, method="mean_std", n_std=3.0)
-    is_anomaly = lstm_series > threshold
-    alarm = first_confirmed_alarm(is_anomaly, window=20)
-    fpr_train = float(is_anomaly[(lstm_index <= train_end)].mean())
-    fpr_val = float(is_anomaly[(lstm_index > train_end) & (lstm_index <= index[-1])].mean())
+    threshold, alarm, fpr_train, fpr_val, val_mean, val_std = _threshold_alarm_fpr(
+        lstm_series, lstm_val, lstm_index, train_end, val_end)
     results["LSTM_AE"] = {"scores": lstm_series, "val_mean": val_mean, "val_std": val_std,
                           "threshold": float(threshold), "alarm": alarm,
                           "fpr_train": fpr_train, "fpr_val": fpr_val}
@@ -247,8 +265,8 @@ def compare_threshold_rules(models, X_healthy_train, X_all, X_healthy_val,
     Returns long table with model, rule, threshold, alarm, fpr.
     """
     thr_rules = {
-        "mean+3std": lambda v: compute_threshold(v, method="mean_std", n_std=3.0),
-        "percentile_99.5": lambda v: compute_threshold(v, method="percentile", percentile=99.5),
+        "mean+3std": lambda v: compute_threshold(v, method="mean_std", n_std=config.THRESHOLD_N_STD),
+        "percentile_99.5": lambda v: compute_threshold(v, method="percentile", percentile=config.THRESHOLD_PERCENTILE),
         "max_x1.5": lambda v: float(np.max(v) * 1.5),
     }
     rows = []
@@ -261,7 +279,7 @@ def compare_threshold_rules(models, X_healthy_train, X_all, X_healthy_val,
         for rname, rfn in thr_rules.items():
             t = rfn(val)
             is_an = full > t
-            alarm = first_confirmed_alarm(is_an, window=20)
+            alarm = first_confirmed_alarm(is_an, window=config.CONTINUITY_WINDOW)
             fpr = float(is_an[(full.index > train_end) & (full.index <= val_end)].mean())
             rows.append({"model": name, "rule": rname, "threshold": round(float(t), 5),
                          "alarm": _alarm_str(alarm), "fpr": round(fpr, 4)})

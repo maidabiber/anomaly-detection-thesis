@@ -68,7 +68,14 @@ def build_cnn_autoencoder(height, width, channels=1):
     return model
 
 
-def train_autoencoder(model, X_train, epochs=50, batch_size=32, validation_split=0.1, seed=42, verbose=0):
+def train_autoencoder(model, X_train, epochs=None, batch_size=None, validation_split=None, seed=42, verbose=0):
+    from src.config import EPOCHS, BATCH_SIZE, VALIDATION_SPLIT
+    if epochs is None:
+        epochs = EPOCHS
+    if batch_size is None:
+        batch_size = BATCH_SIZE
+    if validation_split is None:
+        validation_split = VALIDATION_SPLIT
     set_seed(seed)
     history = model.fit(X_train, X_train, epochs=epochs, batch_size=batch_size,
                         validation_split=validation_split, shuffle=True, verbose=verbose)
@@ -90,9 +97,20 @@ def reconstruction_error_images(model, X_images):
     return np.mean((X_images - X_pred) ** 2, axis=(1, 2, 3))
 
 
-def run_multiple(build_fn, X_train, X_all, error_fn=reconstruction_error, n_runs=5, seed_start=0,
-                  epochs=50, batch_size=32, validation_split=0.1, method="mean",
+def run_multiple(build_fn, X_train, X_all, error_fn=reconstruction_error, n_runs=None, seed_start=None,
+                  epochs=None, batch_size=None, validation_split=None, method="mean",
                   X_val=None):
+    from src.config import EPOCHS, BATCH_SIZE, VALIDATION_SPLIT, N_RUNS, SEED_START
+    if n_runs is None:
+        n_runs = N_RUNS
+    if seed_start is None:
+        seed_start = SEED_START
+    if epochs is None:
+        epochs = EPOCHS
+    if batch_size is None:
+        batch_size = BATCH_SIZE
+    if validation_split is None:
+        validation_split = VALIDATION_SPLIT
     """
     Train n_runs models on X_train, return averaged errors on X_all and, if X_val
     is given, on X_val from the SAME models (no retraining). Use X_val to get
