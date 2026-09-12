@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 
 import src.config as config
-from src.evaluation import compute_threshold, first_confirmed_alarm, false_positive_rate
+from src.evaluation import (compute_threshold, first_confirmed_alarm, false_positive_rate,
+                            classify_alarm, score_detection)
 
 
 def _alarm_str(alarm) -> str | None:
@@ -19,7 +20,8 @@ def _threshold_alarm_fpr(scores_series: pd.Series, val_scores, index, train_end,
     """Shared threshold (mean+3std), alarm (window) and FPRs. One place, used everywhere."""
     val_mean = float(np.mean(val_scores))
     val_std = float(np.std(val_scores))
-    threshold = compute_threshold(val_scores, method="mean_std", n_std=config.THRESHOLD_N_STD)
+    threshold = compute_threshold(val_scores, method=config.THRESHOLD_METHOD, n_std=config.THRESHOLD_N_STD,
+                                      percentile=config.THRESHOLD_PERCENTILE)
     is_anomaly = scores_series > threshold
     alarm = first_confirmed_alarm(is_anomaly, window=config.CONTINUITY_WINDOW)
     fpr_train = float(is_anomaly[index <= train_end].mean())
@@ -122,6 +124,231 @@ def compare_feature_setups(models, df: pd.DataFrame, df_healthy_train: pd.DataFr
         setups[feat] = [c for c in df.columns if c.endswith("_" + feat)]
     return compare_column_setups(models, setups, df, df_healthy_train, df_healthy_val,
                                  train_end, val_end, verbose=verbose)
+
+
+def sweep_detector_params(models, X_healthy_train, X_all, X_healthy_val,
+                          index, train_end, val_end,
+                          windows: tuple = (10, 20, 30),
+                          known_fault_start=None, burn_in_end=None,
+                          verbose=False) -> pd.DataFrame:
+    """
+    Fit each model once, then score every window x threshold-rule combo
+    from the same scores. One row per (model, window, rule): threshold,
+    alarm, and either fpr_val (no onset) or verdict/delay/precision/recall/f1.
+    Same table answers "which window, which formula" side by side.
+    """
+    thr_rules = {
+        "mean+2std": lambda v: compute_threshold(v, method="mean_std", n_std=2.0),
+        "mean+3std": lambda v: compute_threshold(v, method="mean_std", n_std=config.THRESHOLD_N_STD),
+        "percentile_99.5": lambda v: compute_threshold(v, method="percentile", percentile=config.THRESHOLD_PERCENTILE),
+
+    }
+    rows = []
+    for name, fit_fn, score_fn in models:
+        if verbose:
+            print(f"Training {name}...", flush=True)
+        model = fit_fn(X_healthy_train)
+        full = pd.Series(score_fn(model, X_all), index=index)
+        val = score_fn(model, X_healthy_val)
+        for w in windows:
+            for rname, rfn in thr_rules.items():
+                t = float(rfn(val))
+                is_an = full > t
+                alarm = first_confirmed_alarm(is_an, window=w)
+                row = {"model": name, "window": w, "rule": rname,
+                       "threshold": round(t, 5), "alarm": _alarm_str(alarm)}
+                if known_fault_start is not None:
+                    v = classify_alarm(alarm, known_fault_start, burn_in_end=burn_in_end)
+                    m = score_detection(is_an, known_fault_start,
+                                        burn_in_end=burn_in_end, window=w)
+                    row.update({"verdict": v["label"],
+                                "delay": (str(v["delay"]) if v["delay"] is not None else None),
+                                "precision": round(m["precision"], 3),
+                                "recall": round(m["recall"], 3),
+                                "f1": round(m["f1"], 3)})
+                else:
+                    fpr = float(is_an[(full.index > train_end) & (full.index <= val_end)].mean())
+                    row["fpr_val"] = round(fpr, 4)
+                rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def sweep_training_params(variants, X_healthy_train, X_all, X_healthy_val,
+                          index, train_end, val_end,
+                          window=None, known_fault_start=None, burn_in_end=None,
+                          verbose=False) -> pd.DataFrame:
+    """
+    Train one detector per hyperparameter variant, score all identically.
+
+    variants: list of (label, fit_fn, score_fn), e.g. from
+    classical_models.classical_training_grid(). Threshold recipe is fixed
+    (config.THRESHOLD_METHOD); only training differs. One row per variant:
+    threshold, alarm, plus fpr_val (no onset) or verdict/delay/P/R/F1.
+    """
+    w = window if window is not None else config.CONTINUITY_WINDOW
+    rows = []
+    for label, fit_fn, score_fn in variants:
+        if verbose:
+            print(f"Training {label}...", flush=True)
+        model = fit_fn(X_healthy_train)
+        full = pd.Series(score_fn(model, X_all), index=index)
+        val = score_fn(model, X_healthy_val)
+        threshold = compute_threshold(val, method=config.THRESHOLD_METHOD,
+                                      n_std=config.THRESHOLD_N_STD,
+                                      percentile=config.THRESHOLD_PERCENTILE)
+        is_an = full > threshold
+        alarm = first_confirmed_alarm(is_an, window=w)
+        row = {"variant": label, "threshold": round(float(threshold), 5),
+               "alarm": _alarm_str(alarm)}
+        if known_fault_start is not None:
+            v = classify_alarm(alarm, known_fault_start, burn_in_end=burn_in_end)
+            m = score_detection(is_an, known_fault_start,
+                                burn_in_end=burn_in_end, window=w)
+            row.update({"verdict": v["label"],
+                        "delay": (str(v["delay"]) if v["delay"] is not None else None),
+                        "precision": round(m["precision"], 3),
+                        "recall": round(m["recall"], 3),
+                        "f1": round(m["f1"], 3)})
+        else:
+            fpr = float(is_an[(full.index > train_end) & (full.index <= val_end)].mean())
+            row["fpr_val"] = round(fpr, 4)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def sweep_deep_training_params(variants, X_healthy_train, X_all, X_healthy_val,
+                               index, train_end, val_end, input_dim,
+                               window_size=10, windows: tuple = (10, 20, 30),
+                               known_fault_start=None, burn_in_end=None,
+                               verbose=False) -> pd.DataFrame:
+    """
+    Train one deep detector per (architecture, epochs, aggregation) variant,
+    then score every window x threshold-rule combo from the same errors
+    (no retraining).
+    variants: list of (label, kind, layers, epochs, agg) from
+    deep_models.deep_training_grid(); kind is "dense" or "lstm".
+    Costs len(variants) x N_RUNS fits.
+    One row per (variant, window, rule): threshold, alarm, plus fpr or
+    verdict/P/R/F1.
+    """
+    import os
+    os.environ["TF_DETERMINISTIC_OPS"] = "1"
+    import tensorflow as tf
+    try:
+        tf.config.threading.set_inter_op_parallelism_threads(1)
+        tf.config.threading.set_intra_op_parallelism_threads(1)
+    except RuntimeError:
+        pass
+
+    from src.deep_models import (
+        build_autoencoder, build_lstm_autoencoder, make_windows,
+        run_multiple, reconstruction_error, reconstruction_error_lstm,
+    )
+
+    thr_rules = {
+        "mean+2std": lambda v: compute_threshold(v, method="mean_std", n_std=2.0),
+        "mean+3std": lambda v: compute_threshold(v, method="mean_std", n_std=config.THRESHOLD_N_STD),
+        "percentile_99.5": lambda v: compute_threshold(v, method="percentile", percentile=config.THRESHOLD_PERCENTILE),
+
+    }
+    Xw_tr, Xw_all, Xw_val = None, None, None
+    if any(k == "lstm" for _, k, _, _, _ in variants):
+        Xw_tr = make_windows(X_healthy_train, window_size)
+        Xw_all = make_windows(X_all, window_size)
+        Xw_val = make_windows(X_healthy_val, window_size)
+        lstm_index = index[window_size - 1:]
+
+    rows = []
+    for label, kind, layers, epochs, agg in variants:
+        if verbose:
+            print(f"Training {label} ({config.N_RUNS} runs)...", flush=True)
+        if kind == "lstm":
+            build_fn = lambda: build_lstm_autoencoder(window_size, input_dim,
+                                                      encoding_dim=config.ENCODING_DIM)
+            (mean_full, _), (mean_val, _) = run_multiple(
+                build_fn, Xw_tr, Xw_all, error_fn=reconstruction_error_lstm,
+                X_val=Xw_val, method=agg,
+                n_runs=config.N_RUNS, epochs=epochs, batch_size=config.BATCH_SIZE)
+            scores_series = pd.Series(mean_full, index=lstm_index)
+            ref_index = lstm_index
+        else:
+            build_fn = lambda hl=layers: build_autoencoder(input_dim, hl)
+            (mean_full, _), (mean_val, _) = run_multiple(
+                build_fn, X_healthy_train, X_all, error_fn=reconstruction_error,
+                X_val=X_healthy_val, method=agg, n_runs=config.N_RUNS,
+                epochs=epochs, batch_size=config.BATCH_SIZE)
+            scores_series = pd.Series(mean_full, index=index)
+            ref_index = index
+        for w in windows:
+            for rname, rfn in thr_rules.items():
+                t = float(rfn(mean_val))
+                is_an = scores_series > t
+                alarm = first_confirmed_alarm(is_an, window=w)
+                row = {"variant": label, "window": w, "rule": rname,
+                       "threshold": round(t, 5), "alarm": _alarm_str(alarm)}
+                if known_fault_start is not None:
+                    v = classify_alarm(alarm, known_fault_start, burn_in_end=burn_in_end)
+                    m = score_detection(is_an, known_fault_start,
+                                        burn_in_end=burn_in_end, window=w)
+                    row.update({"verdict": v["label"],
+                                "delay": (str(v["delay"]) if v["delay"] is not None else None),
+                                "precision": round(m["precision"], 3),
+                                "recall": round(m["recall"], 3),
+                                "f1": round(m["f1"], 3)})
+                else:
+                    row["fpr_val"] = round(float(is_an[(ref_index > train_end)
+                                                       & (ref_index <= val_end)].mean()), 4)
+                rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def sweep_trained_scores(results: dict, train_end, val_end,
+                         windows: tuple = (10, 15, 20),
+                         known_fault_start=None, burn_in_end=None) -> pd.DataFrame:
+    """
+    Window x threshold-rule grid over ALREADY trained models (no retraining).
+
+    results: dict from run_classical_suite or run_deep_suite (needs "scores"
+    and "val_scores" per model). Deep results also carry scores_mean /
+    scores_median from the same runs: both aggregations are swept, one extra
+    "agg" column. Same pivot layout as the 8b detector sweep: one row per
+    (model, agg, window, rule), alarm plus fpr_val, or verdict/P/R/F1
+    when known_fault_start is given.
+    """
+    thr_rules = {
+        "mean+2std": lambda v: compute_threshold(v, method="mean_std", n_std=2.0),
+        "mean+3std": lambda v: compute_threshold(v, method="mean_std", n_std=config.THRESHOLD_N_STD),
+        "percentile_99.5": lambda v: compute_threshold(v, method="percentile", percentile=config.THRESHOLD_PERCENTILE),
+    }
+    rows = []
+    for name, r in results.items():
+        if "scores_mean" in r:
+            aggs = [("mean", r["scores_mean"], np.asarray(r["val_scores_mean"])),
+                    ("median", r["scores_median"], np.asarray(r["val_scores_median"]))]
+        else:
+            aggs = [("as-stored", r["scores"], np.asarray(r["val_scores"]))]
+        for agg, full, val in aggs:
+            for w in windows:
+                for rname, rfn in thr_rules.items():
+                    t = float(rfn(val))
+                    is_an = full > t
+                    alarm = first_confirmed_alarm(is_an, window=w)
+                    row = {"model": name, "agg": agg, "window": w, "rule": rname,
+                           "threshold": round(t, 5), "alarm": _alarm_str(alarm)}
+                    if known_fault_start is not None:
+                        v = classify_alarm(alarm, known_fault_start, burn_in_end=burn_in_end)
+                        m = score_detection(is_an, known_fault_start,
+                                            burn_in_end=burn_in_end, window=w)
+                        row.update({"verdict": v["label"],
+                                    "delay": (str(v["delay"]) if v["delay"] is not None else None),
+                                    "precision": round(m["precision"], 3),
+                                    "recall": round(m["recall"], 3),
+                                    "f1": round(m["f1"], 3)})
+                    else:
+                        row["fpr_val"] = round(float(is_an[(full.index > train_end)
+                                                           & (full.index <= val_end)].mean()), 4)
+                    rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def boundary_sensitivity(models, boundaries: dict[str, pd.Timestamp], feature_cols: list[str],
@@ -300,14 +527,20 @@ def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_
         if verbose:
             print(f"Training {name} (3 runs)...", flush=True)
         build_fn = lambda hl=hidden_layers: build_autoencoder(input_dim, hl)
-        (mean_full, _), (mean_val, _) = run_multiple(
+        (mean_full, _), (mean_val, _), all_full, all_val = run_multiple(
             build_fn, X_healthy_train, X_all,
             error_fn=reconstruction_error, X_val=X_healthy_val,
-            n_runs=config.N_RUNS, epochs=config.EPOCHS, batch_size=config.BATCH_SIZE)
+            n_runs=config.N_RUNS, epochs=config.EPOCHS, batch_size=config.BATCH_SIZE,
+            return_runs=True)
         scores_series = pd.Series(mean_full, index=index)
         threshold, alarm, fpr_train, fpr_val, val_mean, val_std = _threshold_alarm_fpr(
             scores_series, mean_val, index, train_end, val_end)
-        results[name] = {"scores": scores_series, "val_mean": val_mean, "val_std": val_std,
+        results[name] = {"scores": scores_series, "val_scores": np.asarray(mean_val),
+                         "scores_mean": pd.Series(mean_full, index=index),
+                         "scores_median": pd.Series(np.median(all_full, axis=0), index=index),
+                         "val_scores_mean": np.asarray(mean_val),
+                         "val_scores_median": np.asarray(np.median(all_val, axis=0)),
+                         "val_mean": val_mean, "val_std": val_std,
                          "threshold": float(threshold), "alarm": alarm,
                          "fpr_train": fpr_train, "fpr_val": fpr_val}
 
@@ -321,14 +554,20 @@ def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_
     if verbose:
         print("Training LSTM_AE (3 runs, median)...", flush=True)
     build_lstm_fn = lambda: build_lstm_autoencoder(window_size, input_dim, encoding_dim=8)
-    (lstm_full, _), (lstm_val, _) = run_multiple(
+    (lstm_full, _), (lstm_val, _), lstm_all, lstm_vall = run_multiple(
         build_lstm_fn, X_healthy_windows, X_all_windows,
         error_fn=reconstruction_error_lstm, X_val=X_val_windows, method="median",
-        n_runs=config.N_RUNS, epochs=config.EPOCHS, batch_size=config.BATCH_SIZE)
+        n_runs=config.N_RUNS, epochs=config.EPOCHS, batch_size=config.BATCH_SIZE,
+        return_runs=True)
     lstm_series = pd.Series(lstm_full, index=lstm_index)
     threshold, alarm, fpr_train, fpr_val, val_mean, val_std = _threshold_alarm_fpr(
         lstm_series, lstm_val, lstm_index, train_end, val_end)
-    results["LSTM_AE"] = {"scores": lstm_series, "val_mean": val_mean, "val_std": val_std,
+    results["LSTM_AE"] = {"scores": lstm_series, "val_scores": np.asarray(lstm_val),
+                          "scores_mean": pd.Series(np.mean(lstm_all, axis=0), index=lstm_index),
+                          "scores_median": lstm_series,
+                          "val_scores_mean": np.asarray(np.mean(lstm_vall, axis=0)),
+                          "val_scores_median": np.asarray(lstm_val),
+                          "val_mean": val_mean, "val_std": val_std,
                           "threshold": float(threshold), "alarm": alarm,
                           "fpr_train": fpr_train, "fpr_val": fpr_val}
 
@@ -383,8 +622,8 @@ def plot_training_curves(X_healthy_train, X_healthy_val, input_dim, window_size=
         ax.axis("off")
     plt.suptitle("Learning curves per architecture")
     plt.tight_layout()
-    plt.show()
-    return fig
+    return fig  # no plt.show(): in notebooks the returned figure is displayed
+    # automatically, and show() + return would render it twice
 
 
 def compare_threshold_rules(models, X_healthy_train, X_all, X_healthy_val,
@@ -396,7 +635,7 @@ def compare_threshold_rules(models, X_healthy_train, X_all, X_healthy_val,
     thr_rules = {
         "mean+3std": lambda v: compute_threshold(v, method="mean_std", n_std=config.THRESHOLD_N_STD),
         "percentile_99.5": lambda v: compute_threshold(v, method="percentile", percentile=config.THRESHOLD_PERCENTILE),
-        "max_x1.5": lambda v: float(np.max(v) * 1.5),
+
     }
     rows = []
     for name, fit_fn, score_fn in models:

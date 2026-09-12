@@ -87,7 +87,8 @@ def score_detection(is_anomaly: pd.Series, known_fault_start: pd.Timestamp,
 
 
 def compare_boundaries(scores: pd.Series, boundaries: list,
-                       n_std: float = 3.0, window: int = 20) -> pd.DataFrame:
+                       n_std: float = 3.0, window: int = 20,
+                       method: str = "mean_std", percentile: float = 99.5) -> pd.DataFrame:
     """Score each candidate boundary, one row per boundary."""
     rows = []
     for boundary in boundaries:
@@ -96,7 +97,8 @@ def compare_boundaries(scores: pd.Series, boundaries: list,
             raise ValueError(f"No samples before boundary {boundary}")
 
         healthy_scores = np.asarray(scores)[mask]
-        threshold = compute_threshold(healthy_scores, method="mean_std", n_std=n_std)
+        threshold = compute_threshold(healthy_scores, method=method,
+                                      n_std=n_std, percentile=percentile)
 
         is_anomaly = scores > threshold
         alarm = first_confirmed_alarm(is_anomaly, window=window)
@@ -110,6 +112,30 @@ def compare_boundaries(scores: pd.Series, boundaries: list,
             "first_alarm": alarm,
             "fpr": fpr,
         })
+    return pd.DataFrame(rows)
+
+
+def sweep_boundary_params(scores: pd.Series, boundaries: list,
+                          n_stds: tuple = (2.0, 3.0),
+                          windows: tuple = (10, 20, 30),
+                          methods: tuple = ("mean_std", "percentile"),
+                          percentile: float = 99.5) -> pd.DataFrame:
+    """Same vote as compare_boundaries, over rule x window grid.
+
+    Rules: mean+{n}std for each n_std, plus percentile_{percentile}.
+    One row per (rule, window, boundary): threshold, first_alarm, fpr.
+    """
+    rows = []
+    for window in windows:
+        for method in methods:
+            grid = n_stds if method == "mean_std" else (None,)
+            for n_std in grid:
+                sub = compare_boundaries(scores, boundaries, n_std=n_std or 3.0,
+                                         window=window, method=method,
+                                         percentile=percentile)
+                label = f"mean+{n_std}std" if method == "mean_std" else f"pct_{percentile}"
+                for _, r in sub.iterrows():
+                    rows.append({"rule": label, "window": window, **r.to_dict()})
     return pd.DataFrame(rows)
 
 

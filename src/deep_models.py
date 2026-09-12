@@ -98,8 +98,8 @@ def reconstruction_error_images(model, X_images):
 
 
 def run_multiple(build_fn, X_train, X_all, error_fn=reconstruction_error, n_runs=None, seed_start=None,
-                  epochs=None, batch_size=None, validation_split=None, method="mean",
-                  X_val=None):
+                   epochs=None, batch_size=None, validation_split=None, method="mean",
+                   X_val=None, return_runs=False):
     from src.config import EPOCHS, BATCH_SIZE, VALIDATION_SPLIT, N_RUNS, SEED_START
     if n_runs is None:
         n_runs = N_RUNS
@@ -137,6 +137,8 @@ def run_multiple(build_fn, X_train, X_all, error_fn=reconstruction_error, n_runs
         std_all = all_errors.std(axis=0)
 
     if X_val is None:
+        if return_runs:
+            return (mean_all, std_all), all_errors
         return mean_all, std_all
 
     all_val_errors = np.array(all_val_errors)
@@ -146,4 +148,28 @@ def run_multiple(build_fn, X_train, X_all, error_fn=reconstruction_error, n_runs
     else:
         mean_val = all_val_errors.mean(axis=0)
         std_val = all_val_errors.std(axis=0)
+    if return_runs:
+        return (mean_all, std_all), (mean_val, std_val), all_errors, all_val_errors
     return (mean_all, std_all), (mean_val, std_val)
+
+
+def deep_training_grid(architectures=None, epochs=(30, 50), include_lstm=True,
+                       aggregations=("mean", "median")):
+    """Labelled (kind, layers, epochs, agg) variants: architecture x epochs x aggregation.
+
+    Same scoring everywhere downstream; only training differs. Each variant
+    costs N_RUNS trainings. Keep the grid small: cost = len(variants) x N_RUNS fits.
+    Returns list of (label, kind, layers, epochs, agg).
+    """
+    if architectures is None:
+        architectures = {"AE_1layer": [8], "AE_2layer": [12, 6], "AE_3layer": [16, 8, 4]}
+    variants = []
+    for arch_name, layers in architectures.items():
+        for ep in epochs:
+            for agg in aggregations:
+                variants.append((f"{arch_name} ep={ep} {agg}", "dense", list(layers), ep, agg))
+    if include_lstm:
+        for ep in epochs:
+            for agg in aggregations:
+                variants.append((f"LSTM_AE ep={ep} {agg}", "lstm", None, ep, agg))
+    return variants
