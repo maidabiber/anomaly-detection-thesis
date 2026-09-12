@@ -24,16 +24,15 @@ ENCODING_DIM = 8
 N_RUNS = 3
 SEED_START = 0
 
-# Reference fault onset per dataset (ground truth for alarm validity).
-# Definition: first 20-consecutive exceedance of faulty-bearing RMS above
-# healthy-train mean + 3*std. Independent of any ML model (raw signal only),
-# same continuity rule (window=20) as model alarms.
-#   2nd test, Bearing_1_RMS: healthy mean 0.07720, thr 0.08044 -> 2004-02-16 06:22:39
-#   3rd test, Bearing_3_RMS: healthy mean 0.06705, thr 0.07251 -> 2004-04-15 18:22:55
-# Rule: confirmed alarm strictly before onset = premature (false), not "early".
-# Only alarms at/after onset count as true detections (delay = alarm - onset).
-FAULT_ONSET_2ND = "2004-02-16 06:22:39"
-FAULT_ONSET_3RD = "2004-04-15 18:22:55"
+# Reference fault onset: ONLY 2nd test has a documented point.
+# Li, W., Qiu, M., Zhu, Z., Jiang, F., Zhou, G., "Fault Diagnosis of Rolling Element
+# Bearings with a Spectrum Searching Method," arXiv:1511.03174 (2015):
+# record 510 = 2004-02-15 23:22:39, early fault stage via spectral analysis.
+# For the 3rd test no equivalent literature source was found, so no onset
+# is fixed here — scoring a 3rd-test alarm against an invented onset would
+# overclaim. A 3rd-test alarm inside the confirmed healthy period (or the
+# startup burn-in) is false by construction, no onset needed.
+FAULT_ONSET_2ND = "2004-02-15 23:22:39"
 
 # Startup transient handling (3rd test only). First 50 rows (2004-03-04, day one)
 # are burn-in: excluded from false-positive scoring. An alarm inside this window

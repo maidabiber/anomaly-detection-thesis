@@ -37,6 +37,24 @@ def detection_delay(first_alarm: pd.Timestamp, known_fault_start: pd.Timestamp) 
     return first_alarm - known_fault_start
 
 
+def false_in_healthy(first_alarm: pd.Timestamp | None,
+                     healthy_end: pd.Timestamp,
+                     burn_in_end: pd.Timestamp | None = None) -> dict:
+    """False-by-construction check, needs no fault onset.
+
+    A confirmed alarm inside the confirmed healthy period is false,
+    whatever the true onset turns out to be. Alarms inside the startup
+    burn-in are startup artefacts. Returns label only.
+    """
+    if first_alarm is None:
+        return {"label": "no alarm"}
+    if burn_in_end is not None and first_alarm <= burn_in_end:
+        return {"label": "startup_artefact (false)"}
+    if first_alarm <= healthy_end:
+        return {"label": "false (inside healthy period)"}
+    return {"label": "after healthy period (needs onset to judge)"}
+
+
 def classify_alarm(first_alarm: pd.Timestamp | None, known_fault_start: pd.Timestamp,
                    burn_in_end: pd.Timestamp | None = None) -> dict:
     """Label one confirmed alarm against the reference fault onset.
