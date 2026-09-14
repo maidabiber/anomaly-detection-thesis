@@ -16,25 +16,40 @@ def _alarm_str(alarm) -> str | None:
     return alarm.strftime("%Y-%m-%d %H:%M:%S") if alarm is not None else None
 
 
-def _threshold_alarm_fpr(scores_series: pd.Series, val_scores, index, train_end, val_end):
+def _hash_arrays(*arrays) -> str:
+    """Short sha1 over array bytes+shapes. Guards cache reuse against changed inputs."""
+    import hashlib
+    h = hashlib.sha1()
+    for a in arrays:
+        arr = np.asarray(a)
+        h.update(str(arr.shape).encode())
+        h.update(arr.tobytes())
+    return h.hexdigest()
+
+
+def _threshold_alarm_fpr(scores_series: pd.Series, val_scores, index, train_end, val_end, window=None):
     """Shared threshold (mean+3std), alarm (window) and FPRs. One place, used everywhere."""
     val_mean = float(np.mean(val_scores))
     val_std = float(np.std(val_scores))
     threshold = compute_threshold(val_scores, method=config.THRESHOLD_METHOD, n_std=config.THRESHOLD_N_STD,
                                       percentile=config.THRESHOLD_PERCENTILE)
     is_anomaly = scores_series > threshold
-    alarm = first_confirmed_alarm(is_anomaly, window=config.CONTINUITY_WINDOW)
+    alarm = first_confirmed_alarm(is_anomaly,
+                                  window=(window if window is not None else config.CONTINUITY_WINDOW))
     fpr_train = float(is_anomaly[index <= train_end].mean())
     fpr_val = float(is_anomaly[(index > train_end) & (index <= val_end)].mean())
     return threshold, alarm, fpr_train, fpr_val, val_mean, val_std
 
 
 def run_classical_suite(models, X_healthy_train, X_all, X_healthy_val,
-                        index, train_end, val_end, verbose=False) -> tuple[pd.DataFrame, dict]:
+                        index, train_end, val_end, verbose=False,
+                        window=None) -> tuple[pd.DataFrame, dict]:
     """
     Fit each classical detector on healthy train only, threshold on validation
     scores, alarm and FPR on the full timeline. Returns summary table plus a
     dict of full scores and thresholds per model for downstream plots.
+    window: continuity window for the confirmed alarm (default None means
+    config.CONTINUITY_WINDOW). Threshold always follows config.py defaults.
     """
     results = {}
     for name, fit_fn, score_fn in models:
@@ -45,7 +60,7 @@ def run_classical_suite(models, X_healthy_train, X_all, X_healthy_val,
         val_scores = score_fn(model, X_healthy_val)
         scores_series = pd.Series(full_scores, index=index)
         threshold, alarm, fpr_train, fpr_val, val_mean, val_std = _threshold_alarm_fpr(
-            scores_series, val_scores, index, train_end, val_end)
+            scores_series, val_scores, index, train_end, val_end, window=window)
         results[name] = {"scores": scores_series, "val_scores": np.asarray(val_scores),
                          "val_mean": val_mean, "val_std": val_std,
                          "threshold": float(threshold), "alarm": alarm,
@@ -64,7 +79,7 @@ def run_classical_suite(models, X_healthy_train, X_all, X_healthy_val,
 
 
 def _score_setup(models, Xtr, Xa_, Xva, index, train_end, val_end,
-                   label: str | None = None) -> list[dict]:
+                   label: str | None = None, window=None) -> list[dict]:
     rows = []
     for name, fit_fn, score_fn in models:
         if label is not None:
@@ -73,7 +88,7 @@ def _score_setup(models, Xtr, Xa_, Xva, index, train_end, val_end,
         full = pd.Series(score_fn(model, Xa_), index=index)
         val = score_fn(model, Xva)
         threshold, alarm, fpr_train, fpr_val, _, _ = _threshold_alarm_fpr(
-            full, val, index, train_end, val_end)
+            full, val, index, train_end, val_end, window=window)
         rows.append({"model": name, "threshold": float(threshold),
                      "alarm": _alarm_str(alarm),
                      "fpr_train": round(fpr_train, 4), "fpr_val": round(fpr_val, 4)})
@@ -82,10 +97,12 @@ def _score_setup(models, Xtr, Xa_, Xva, index, train_end, val_end,
 
 def compare_column_setups(models, setups: dict[str, list[str]], df: pd.DataFrame,
                           df_healthy_train: pd.DataFrame, df_healthy_val: pd.DataFrame,
-                          train_end, val_end, verbose=False) -> pd.DataFrame:
+                          train_end, val_end, verbose=False, window=None) -> pd.DataFrame:
     """
     Same procedure on different column subsets (feature types or bearings).
     setups maps setup name to column list. Scaler is fit per subset on healthy train.
+    window: continuity window for the confirmed alarm (default None means
+    config.CONTINUITY_WINDOW). Threshold always follows config.py defaults.
     Returns long table with setup, model, threshold, alarm, fpr_train, fpr_val.
     """
     from sklearn.preprocessing import MinMaxScaler
@@ -98,18 +115,20 @@ def compare_column_setups(models, setups: dict[str, list[str]], df: pd.DataFrame
         Xtr = scaler.fit_transform(df_healthy_train[cols])
         Xa_ = scaler.transform(df[cols])
         Xva = scaler.transform(df_healthy_val[cols])
-        for row in _score_setup(models, Xtr, Xa_, Xva, df.index, train_end, val_end):
+        for row in _score_setup(models, Xtr, Xa_, Xva, df.index, train_end, val_end, window=window):
             rows.append({"setup": setup, **row})
     return pd.DataFrame(rows)
 
 
 def compare_feature_setups(models, df: pd.DataFrame, df_healthy_train: pd.DataFrame,
                            df_healthy_val: pd.DataFrame, train_end, val_end,
-                           feature_types: list[str] | None = None, verbose=False) -> pd.DataFrame:
+                           feature_types: list[str] | None = None, verbose=False,
+                           window=None) -> pd.DataFrame:
     """
     Joint (all_24 vs all_36) plus per-feature setups in one table.
     Uses OLD6 (24 time features) and all 36 (time+spectral) as two joints,
     then one entry per feature type. Wrapper around compare_column_setups.
+    window is passed through (default None means config.CONTINUITY_WINDOW).
     """
     if feature_types is None:
         feature_types = ["RMS", "Kurtosis", "CrestFactor", "Peak", "Skewness", "Std",
@@ -123,19 +142,24 @@ def compare_feature_setups(models, df: pd.DataFrame, df_healthy_train: pd.DataFr
     for feat in feature_types:
         setups[feat] = [c for c in df.columns if c.endswith("_" + feat)]
     return compare_column_setups(models, setups, df, df_healthy_train, df_healthy_val,
-                                 train_end, val_end, verbose=verbose)
+                                 train_end, val_end, verbose=verbose, window=window)
 
 
 def sweep_detector_params(models, X_healthy_train, X_all, X_healthy_val,
                           index, train_end, val_end,
                           windows: tuple = (10, 20, 30),
                           known_fault_start=None, burn_in_end=None,
-                          verbose=False) -> pd.DataFrame:
+                          verbose=False, return_fitted=False):
     """
     Fit each model once, then score every window x threshold-rule combo
     from the same scores. One row per (model, window, rule): threshold,
     alarm, and either fpr_val (no onset) or verdict/delay/precision/recall/f1.
     Same table answers "which window, which formula" side by side.
+    If return_fitted is True, return (table, fitted) where fitted maps
+    model name to the fitted model plus full/val scores and a data hash,
+    so compare_joint_24vs36_full_grid(..., cached_36=fitted) can skip
+    refitting the identical all_36 setup. Default False keeps the old
+    single-DataFrame return value.
     """
     thr_rules = {
         "mean+2std": lambda v: compute_threshold(v, method="mean_std", n_std=2.0),
@@ -144,12 +168,17 @@ def sweep_detector_params(models, X_healthy_train, X_all, X_healthy_val,
 
     }
     rows = []
+    fitted = {}
+    data_hash = _hash_arrays(X_healthy_train, X_all, X_healthy_val)
     for name, fit_fn, score_fn in models:
         if verbose:
             print(f"Training {name}...", flush=True)
         model = fit_fn(X_healthy_train)
         full = pd.Series(score_fn(model, X_all), index=index)
         val = score_fn(model, X_healthy_val)
+        fitted[name] = {"model": model, "full": full, "val": np.asarray(val),
+                        "fit_fn": fit_fn, "score_fn": score_fn,
+                        "data_hash": data_hash}
         for w in windows:
             for rname, rfn in thr_rules.items():
                 t = float(rfn(val))
@@ -170,7 +199,10 @@ def sweep_detector_params(models, X_healthy_train, X_all, X_healthy_val,
                     fpr = float(is_an[(full.index > train_end) & (full.index <= val_end)].mean())
                     row["fpr_val"] = round(fpr, 4)
                 rows.append(row)
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    if return_fitted:
+        return out, fitted
+    return out
 
 
 def sweep_training_params(variants, X_healthy_train, X_all, X_healthy_val,
@@ -220,7 +252,7 @@ def sweep_deep_training_params(variants, X_healthy_train, X_all, X_healthy_val,
                                index, train_end, val_end, input_dim,
                                window_size=10, windows: tuple = (10, 20, 30),
                                known_fault_start=None, burn_in_end=None,
-                               verbose=False) -> pd.DataFrame:
+                               verbose=False, return_fitted=False):
     """
     Train one deep detector per (architecture, epochs, aggregation) variant,
     then score every window x threshold-rule combo from the same errors
@@ -230,6 +262,12 @@ def sweep_deep_training_params(variants, X_healthy_train, X_all, X_healthy_val,
     Costs len(variants) x N_RUNS fits.
     One row per (variant, window, rule): threshold, alarm, plus fpr or
     verdict/P/R/F1.
+    If return_fitted is True, return (table, fitted) where fitted maps
+    variant label to aggregated full/val scores plus ref_index, input_dim,
+    window_size, variant spec and a data hash, so
+    compare_joint_24vs36_full_grid_deep(..., cached_36=fitted) can skip
+    refitting the identical all_36 setup. Default False keeps the old
+    single-DataFrame return value.
     """
     import os
     os.environ["TF_DETERMINISTIC_OPS"] = "1"
@@ -259,6 +297,8 @@ def sweep_deep_training_params(variants, X_healthy_train, X_all, X_healthy_val,
         lstm_index = index[window_size - 1:]
 
     rows = []
+    fitted = {}
+    data_hash = _hash_arrays(X_healthy_train, X_all, X_healthy_val)
     for label, kind, layers, epochs, agg in variants:
         if verbose:
             print(f"Training {label} ({config.N_RUNS} runs)...", flush=True)
@@ -279,6 +319,10 @@ def sweep_deep_training_params(variants, X_healthy_train, X_all, X_healthy_val,
                 epochs=epochs, batch_size=config.BATCH_SIZE)
             scores_series = pd.Series(mean_full, index=index)
             ref_index = index
+        fitted[label] = {"kind": kind, "layers": layers, "epochs": epochs, "agg": agg,
+                         "full": scores_series, "val": np.asarray(mean_val),
+                         "ref_index": ref_index, "input_dim": input_dim,
+                         "window_size": window_size, "data_hash": data_hash}
         for w in windows:
             for rname, rfn in thr_rules.items():
                 t = float(rfn(mean_val))
@@ -299,7 +343,10 @@ def sweep_deep_training_params(variants, X_healthy_train, X_all, X_healthy_val,
                     row["fpr_val"] = round(float(is_an[(ref_index > train_end)
                                                        & (ref_index <= val_end)].mean()), 4)
                 rows.append(row)
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    if return_fitted:
+        return out, fitted
+    return out
 
 
 def sweep_trained_scores(results: dict, train_end, val_end,
@@ -353,10 +400,12 @@ def sweep_trained_scores(results: dict, train_end, val_end,
 
 def boundary_sensitivity(models, boundaries: dict[str, pd.Timestamp], feature_cols: list[str],
                          df: pd.DataFrame, val_fraction: float = 0.2,
-                         verbose=False) -> pd.DataFrame:
+                         verbose=False, window=None) -> pd.DataFrame:
     """
     Repeat the full procedure (split, scale, fit, threshold) per boundary.
     Uses split_train_val with val_fraction on each healthy period.
+    window: continuity window for the confirmed alarm (default None means
+    config.CONTINUITY_WINDOW). Threshold always follows config.py defaults.
     """
     from src.preprocessing import split_healthy, split_train_val, scale_features
 
@@ -369,16 +418,18 @@ def boundary_sensitivity(models, boundaries: dict[str, pd.Timestamp], feature_co
         Xtr, Xa_, scaler = scale_features(df_tr, df[feature_cols])
         Xva = scaler.transform(df_va)
         train_end, val_end = df_tr.index[-1], df_h.index[-1]
-        for row in _score_setup(models, Xtr, Xa_, Xva, df.index, train_end, val_end):
+        for row in _score_setup(models, Xtr, Xa_, Xva, df.index, train_end, val_end, window=window):
             rows.append({"boundary_label": label, **row})
     return pd.DataFrame(rows)
 
 
 def compare_scalers(models, scalers: dict[str, type], df: pd.DataFrame,
                     df_healthy_train: pd.DataFrame, df_healthy_val: pd.DataFrame,
-                    train_end, val_end, verbose=False) -> pd.DataFrame:
+                    train_end, val_end, verbose=False, window=None) -> pd.DataFrame:
     """
     Same procedure under different scalers (classes, instantiated per use).
+    window: continuity window for the confirmed alarm (default None means
+    config.CONTINUITY_WINDOW). Threshold always follows config.py defaults.
     Returns long table with scaler, model, threshold, alarm, fpr_train, fpr_val.
     """
     rows = []
@@ -388,14 +439,19 @@ def compare_scalers(models, scalers: dict[str, type], df: pd.DataFrame,
         Xa_ = scaler.transform(df)
         Xva = scaler.transform(df_healthy_val)
         for row in _score_setup(models, Xtr, Xa_, Xva, df.index, train_end, val_end,
-                                label=sname):
+                                label=sname, window=window):
             rows.append({"scaler": sname, **row})
     return pd.DataFrame(rows)
 
 
 def deep_boundary_sensitivity(boundaries: dict[str, pd.Timestamp], feature_cols: list[str],
-                                df: pd.DataFrame, val_fraction: float = 0.2, verbose=False) -> pd.DataFrame:
-    """Same as boundary_sensitivity but for deep suite (3 runs, median for LSTM)."""
+                                df: pd.DataFrame, val_fraction: float = 0.2, verbose=False,
+                                window=None) -> pd.DataFrame:
+    """
+    Same as boundary_sensitivity but for deep suite (3 runs, median for LSTM).
+    window: continuity window for the confirmed alarm (default None means
+    config.CONTINUITY_WINDOW). Threshold always follows config.py defaults.
+    """
     from src.preprocessing import split_healthy, split_train_val, scale_features
     rows = []
     for label, b in boundaries.items():
@@ -407,7 +463,7 @@ def deep_boundary_sensitivity(boundaries: dict[str, pd.Timestamp], feature_cols:
         Xva = scaler.transform(df_va)
         train_end, val_end = df_tr.index[-1], df_h.index[-1]
         input_dim = Xtr.shape[1]
-        summary, _ = run_deep_suite(Xtr, Xa_, Xva, df.index, train_end, val_end, input_dim, verbose=False)
+        summary, _ = run_deep_suite(Xtr, Xa_, Xva, df.index, train_end, val_end, input_dim, verbose=False, window=window)
         for _, row in summary.iterrows():
             rows.append({"boundary_label": label, "model": row["model"],
                          "threshold": row["threshold"], "alarm": row["first_alarm"],
@@ -417,8 +473,12 @@ def deep_boundary_sensitivity(boundaries: dict[str, pd.Timestamp], feature_cols:
 
 def deep_compare_scalers(scalers: dict[str, type], df: pd.DataFrame,
                          df_healthy_train: pd.DataFrame, df_healthy_val: pd.DataFrame,
-                         train_end, val_end, verbose=False) -> pd.DataFrame:
-    """Same as compare_scalers but for deep suite."""
+                         train_end, val_end, verbose=False, window=None) -> pd.DataFrame:
+    """
+    Same as compare_scalers but for deep suite.
+    window: continuity window for the confirmed alarm (default None means
+    config.CONTINUITY_WINDOW). Threshold always follows config.py defaults.
+    """
     rows = []
     for sname, scaler_cls in scalers.items():
         if verbose:
@@ -428,7 +488,7 @@ def deep_compare_scalers(scalers: dict[str, type], df: pd.DataFrame,
         Xa_ = scaler.transform(df)
         Xva = scaler.transform(df_healthy_val)
         input_dim = Xtr.shape[1]
-        summary, _ = run_deep_suite(Xtr, Xa_, Xva, df.index, train_end, val_end, input_dim, verbose=False)
+        summary, _ = run_deep_suite(Xtr, Xa_, Xva, df.index, train_end, val_end, input_dim, verbose=False, window=window)
         for _, row in summary.iterrows():
             rows.append({"scaler": sname, "model": row["model"],
                          "threshold": row["threshold"], "alarm": row["first_alarm"],
@@ -491,16 +551,220 @@ def compare_joint_24vs36(models, df: pd.DataFrame, df_healthy_train: pd.DataFram
     return summary_36, summary_24, diff_df
 
 
+def compare_joint_24vs36_full_grid(models, df: pd.DataFrame,
+                                   df_healthy_train: pd.DataFrame,
+                                   df_healthy_val: pd.DataFrame,
+                                   train_end, val_end,
+                                   windows: tuple = (10, 15, 20),
+                                   verbose=False,
+                                   cached_36=None) -> pd.DataFrame:
+    """
+    Window x threshold-rule grid on joint 24 time vs 36 time+spectral setups.
+
+    Same training as section 8b (sweep_detector_params): fit each model once
+    per setup on healthy train, then score every window x rule combo from
+    the same scores (no retraining). Column split is identical to
+    compare_joint_24vs36: all_24 are the 24 time features (OLD6 set, no
+    SpecCentroid/HighFreqRatio/SpecPeak), all_36 is the full frame.
+    Scaler is fit per setup on healthy train.
+
+    models: list of (name, fit_fn, score_fn), e.g. the 4 default classical
+    detectors. Threshold rules are identical to sweep_detector_params:
+    mean+2std, mean+3std (config.THRESHOLD_N_STD), percentile_99.5
+    (config.THRESHOLD_PERCENTILE).
+    cached_36: optional fitted dict from sweep_detector_params(...,
+    return_fitted=True) run on the same all_36 inputs. A cached entry is
+    reused only if model name, fit/score functions AND the sha1 data hash
+    all match the current all_36 arrays; otherwise the model is refit, so
+    a changed boundary or changed hyperparameters can never silently reuse
+    stale scores. all_24 has no cache source and is always trained.
+
+    No fault onset is used anywhere here, not even as an argument:
+    rows carry alarm + fpr_val only. The table holds ALL combos per setup
+    (sorted within each setup by fpr_val, alarm breaks ties, missing
+    alarms last) so the notebook can show top-3 per setup and judge
+    convincing vs marginal wins, plus pivot like 8b to compare 24 vs 36.
+    Columns: setup, model, window, rule, threshold, alarm, fpr_val.
+    """
+    from src.preprocessing import scale_features
+
+    OLD6 = ["RMS", "Kurtosis", "CrestFactor", "Peak", "Skewness", "Std"]
+    old_cols = [c for c in df.columns if any(c.endswith("_" + f) for f in OLD6)]
+    setups = {
+        "all_24": old_cols,
+        "all_36": list(df.columns),
+    }
+    thr_rules = {
+        "mean+2std": lambda v: compute_threshold(v, method="mean_std", n_std=2.0),
+        "mean+3std": lambda v: compute_threshold(v, method="mean_std", n_std=config.THRESHOLD_N_STD),
+        "percentile_99.5": lambda v: compute_threshold(v, method="percentile", percentile=config.THRESHOLD_PERCENTILE),
+    }
+
+    rows = []
+    for setup, cols in setups.items():
+        if verbose:
+            print(f"--- {setup} ---", flush=True)
+        Xtr, Xa_, scaler = scale_features(df_healthy_train[cols], df[cols])
+        Xva = scaler.transform(df_healthy_val[cols])
+        for name, fit_fn, score_fn in models:
+            entry = (cached_36 or {}).get(name) if setup == "all_36" else None
+            if (entry is not None
+                    and entry.get("fit_fn") is fit_fn
+                    and entry.get("score_fn") is score_fn
+                    and entry.get("data_hash") == _hash_arrays(Xtr, Xa_, Xva)):
+                if verbose:
+                    print(f"Reusing cached all_36 scores for {name}...", flush=True)
+                full, val = entry["full"], entry["val"]
+            else:
+                if verbose:
+                    print(f"Training {name} ({setup})...", flush=True)
+                model = fit_fn(Xtr)
+                full = pd.Series(score_fn(model, Xa_), index=df.index)
+                val = np.asarray(score_fn(model, Xva))
+            for w in windows:
+                for rname, rfn in thr_rules.items():
+                    t = float(rfn(val))
+                    is_an = full > t
+                    alarm = first_confirmed_alarm(is_an, window=w)
+                    fpr_val = float(is_an[(df.index > train_end) & (df.index <= val_end)].mean())
+                    rows.append({"setup": setup, "model": name, "window": w,
+                                 "rule": rname, "threshold": round(t, 5),
+                                 "alarm": _alarm_str(alarm),
+                                 "fpr_val": round(fpr_val, 4)})
+
+    out = pd.DataFrame(rows, columns=["setup", "model", "window", "rule",
+                                      "threshold", "alarm", "fpr_val"])
+    # Sort within each setup by fpr_val, earliest alarm breaks ties (None last).
+    out["_alarm_missing"] = out["alarm"].isna()
+    out = out.sort_values(["setup", "fpr_val", "_alarm_missing", "alarm", "model", "window", "rule"],
+                          ascending=[True, True, True, True, True, True, True]).drop(
+        columns=["_alarm_missing"]).reset_index(drop=True)
+    return out
+
+
+def _cached_deep_grid(cached, variants, Xtr, Xa_, Xva, index,
+                      train_end, val_end, windows, window_size, verbose=False):
+    """
+    Re-score cached all_36 deep fits over a window x rule grid (no training).
+    Returns a DataFrame with sweep_deep_training_params' no-onset columns,
+    or None if any variant lacks a usable entry (label/spec/dims/hash must
+    all match) - the caller then refits the whole setup instead of risking
+    a partially stale table.
+    """
+    thr_rules = {
+        "mean+2std": lambda v: compute_threshold(v, method="mean_std", n_std=2.0),
+        "mean+3std": lambda v: compute_threshold(v, method="mean_std", n_std=config.THRESHOLD_N_STD),
+        "percentile_99.5": lambda v: compute_threshold(v, method="percentile", percentile=config.THRESHOLD_PERCENTILE),
+    }
+    want = {label: (kind, layers, epochs, agg) for label, kind, layers, epochs, agg in variants}
+    data_hash = _hash_arrays(Xtr, Xa_, Xva)
+    for label, spec in want.items():
+        entry = (cached or {}).get(label)
+        if (entry is None or (entry.get("kind"), entry.get("layers"),
+                              entry.get("epochs"), entry.get("agg")) != spec
+                or entry.get("input_dim") != Xtr.shape[1]
+                or entry.get("window_size") != window_size
+                or entry.get("data_hash") != data_hash):
+            return None
+    rows = []
+    for label in want:
+        entry = cached[label]
+        if verbose:
+            print(f"Reusing cached all_36 scores for {label}...", flush=True)
+        scores_series, mean_val, ref_index = entry["full"], entry["val"], entry["ref_index"]
+        for w in windows:
+            for rname, rfn in thr_rules.items():
+                t = float(rfn(mean_val))
+                is_an = scores_series > t
+                alarm = first_confirmed_alarm(is_an, window=w)
+                rows.append({"variant": label, "window": w, "rule": rname,
+                             "threshold": round(t, 5), "alarm": _alarm_str(alarm),
+                             "fpr_val": round(float(is_an[(ref_index > train_end)
+                                                          & (ref_index <= val_end)].mean()), 4)})
+    return pd.DataFrame(rows)
+
+
+def compare_joint_24vs36_full_grid_deep(variants, df: pd.DataFrame,
+                                           df_healthy_train: pd.DataFrame,
+                                           df_healthy_val: pd.DataFrame,
+                                           train_end, val_end,
+                                           window_size=10,
+                                           windows: tuple = (10, 15, 20),
+                                           verbose=False,
+                                           cached_36=None) -> pd.DataFrame:
+    """
+    Window x threshold-rule grid for deep detectors on joint 24 vs 36 setups.
+
+    Same column split as compare_joint_24vs36_full_grid: all_24 are the 24
+    time features (OLD6 set, no SpecCentroid/HighFreqRatio/SpecPeak), all_36
+    is the full frame. Per setup the columns are scaled and the EXISTING
+    sweep_deep_training_params is called over the window x rule grid.
+    cached_36: optional fitted dict from sweep_deep_training_params(...,
+    return_fitted=True) run on the same all_36 inputs. A cached setup is
+    reused only if every variant's label, spec, input_dim, window_size AND
+    the sha1 data hash all match; otherwise the whole setup is refit, so a
+    changed boundary or variant set can never silently reuse stale scores.
+    all_24 has no cache source and is always trained.
+    Results get a setup column, are concatenated (pd.concat) and sorted
+    within each setup by fpr_val (earliest alarm breaks ties, None last).
+    Columns: setup, variant, window, rule, threshold, alarm, fpr_val.
+
+    Selection is onset-blind: no known_fault_start is passed anywhere, rows
+    carry alarm + fpr_val only.
+    Expensive without cache: len(variants) x N_RUNS x 2 trainings (one fit
+    per variant, run and setup). With the full deep_models.deep_training_grid()
+    that is 16 variants x 3 runs x 2 setups = 96 trainings; with cached_36
+    only the all_24 half (48 trainings) runs.
+    """
+    from src.preprocessing import scale_features
+
+    OLD6 = ["RMS", "Kurtosis", "CrestFactor", "Peak", "Skewness", "Std"]
+    old_cols = [c for c in df.columns if any(c.endswith("_" + f) for f in OLD6)]
+    setups = {
+        "all_24": old_cols,
+        "all_36": list(df.columns),
+    }
+
+    frames = []
+    for setup, cols in setups.items():
+        if verbose:
+            print(f"--- {setup} ---", flush=True)
+        Xtr, Xa_, scaler = scale_features(df_healthy_train[cols], df[cols])
+        Xva = scaler.transform(df_healthy_val[cols])
+        sub = None
+        if setup == "all_36" and cached_36:
+            sub = _cached_deep_grid(cached_36, variants, Xtr, Xa_, Xva, df.index,
+                                    train_end, val_end, windows, window_size,
+                                    verbose=verbose)
+        if sub is None:
+            sub = sweep_deep_training_params(
+                variants, Xtr, Xa_, Xva, df.index, train_end, val_end,
+                input_dim=Xtr.shape[1], window_size=window_size,
+                windows=windows, verbose=verbose)
+        sub["setup"] = setup
+        frames.append(sub)
+
+    out = pd.concat(frames, ignore_index=True)
+    out["_alarm_missing"] = out["alarm"].isna()
+    out = out.sort_values(["setup", "fpr_val", "_alarm_missing", "alarm",
+                           "variant", "window", "rule"],
+                          ascending=[True, True, True, True, True, True, True]).drop(
+        columns=["_alarm_missing"]).reset_index(drop=True)
+    return out
+
+
 def format_deep_summary(df: pd.DataFrame):
     return format_classical_summary(df)
 
 
 def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_end,
-                   input_dim, window_size=10, verbose=False):
+                   input_dim, window_size=10, verbose=False, window=None):
     """
     Train 3 dense autoencoders + 1 LSTM autoencoder on healthy train,
     threshold on validation, alarm/FPR on full timeline.
     Handles TF determinism and LSTM median aggregation internally.
+    window: continuity window for the confirmed alarm (default None means
+    config.CONTINUITY_WINDOW). Threshold always follows config.py defaults.
     Returns (summary DataFrame, results dict) like run_classical_suite.
     """
     import os
@@ -534,7 +798,7 @@ def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_
             return_runs=True)
         scores_series = pd.Series(mean_full, index=index)
         threshold, alarm, fpr_train, fpr_val, val_mean, val_std = _threshold_alarm_fpr(
-            scores_series, mean_val, index, train_end, val_end)
+            scores_series, mean_val, index, train_end, val_end, window=window)
         results[name] = {"scores": scores_series, "val_scores": np.asarray(mean_val),
                          "scores_mean": pd.Series(mean_full, index=index),
                          "scores_median": pd.Series(np.median(all_full, axis=0), index=index),
@@ -561,7 +825,7 @@ def run_deep_suite(X_healthy_train, X_all, X_healthy_val, index, train_end, val_
         return_runs=True)
     lstm_series = pd.Series(lstm_full, index=lstm_index)
     threshold, alarm, fpr_train, fpr_val, val_mean, val_std = _threshold_alarm_fpr(
-        lstm_series, lstm_val, lstm_index, train_end, val_end)
+        lstm_series, lstm_val, lstm_index, train_end, val_end, window=window)
     results["LSTM_AE"] = {"scores": lstm_series, "val_scores": np.asarray(lstm_val),
                           "scores_mean": pd.Series(np.mean(lstm_all, axis=0), index=lstm_index),
                           "scores_median": lstm_series,
@@ -622,8 +886,11 @@ def plot_training_curves(X_healthy_train, X_healthy_val, input_dim, window_size=
         ax.axis("off")
     plt.suptitle("Learning curves per architecture")
     plt.tight_layout()
-    return fig  # no plt.show(): in notebooks the returned figure is displayed
-    # automatically, and show() + return would render it twice
+    plt.close(fig)  # closed so the post-cell flush finds nothing open; the
+    # returned figure below still renders exactly once via execute_result.
+    # Without this, notebooks show the figure twice (flush display_data +
+    # execute_result of the returned fig).
+    return fig
 
 
 def compare_threshold_rules(models, X_healthy_train, X_all, X_healthy_val,
