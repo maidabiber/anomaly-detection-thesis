@@ -68,7 +68,8 @@ def build_cnn_autoencoder(height, width, channels=1):
     return model
 
 
-def train_autoencoder(model, X_train, epochs=None, batch_size=None, validation_split=None, seed=42, verbose=0):
+def train_autoencoder(model, X_train, epochs=None, batch_size=None, validation_split=None, seed=42, verbose=0,
+                      validation_data=None):
     from src.config import EPOCHS, BATCH_SIZE, VALIDATION_SPLIT
     if epochs is None:
         epochs = EPOCHS
@@ -77,8 +78,14 @@ def train_autoencoder(model, X_train, epochs=None, batch_size=None, validation_s
     if validation_split is None:
         validation_split = VALIDATION_SPLIT
     set_seed(seed)
-    history = model.fit(X_train, X_train, epochs=epochs, batch_size=batch_size,
-                        validation_split=validation_split, shuffle=True, verbose=verbose)
+    if validation_data is not None:
+        # Explicit thesis validation set (X_val, y_val); takes precedence over
+        # the keras-internal last-fraction split so curves truly show train vs val.
+        history = model.fit(X_train, X_train, epochs=epochs, batch_size=batch_size,
+                            validation_data=validation_data, shuffle=True, verbose=verbose)
+    else:
+        history = model.fit(X_train, X_train, epochs=epochs, batch_size=batch_size,
+                            validation_split=validation_split, shuffle=True, verbose=verbose)
     return model, history
 
 

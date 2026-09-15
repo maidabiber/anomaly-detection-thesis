@@ -874,7 +874,8 @@ def plot_training_curves(X_healthy_train, X_healthy_val, input_dim, window_size=
     axes = axes.flat if n > 1 else [axes]
     for ax, (name, build, data) in zip(axes, configs):
         Xtr_c, Xva_c = data
-        m, hist = train_autoencoder(build(), Xtr_c, epochs=config.EPOCHS, batch_size=config.BATCH_SIZE, seed=0)
+        m, hist = train_autoencoder(build(), Xtr_c, epochs=config.EPOCHS, batch_size=config.BATCH_SIZE, seed=0,
+                                    validation_data=(Xva_c, Xva_c))
         print(f"{name}: final train loss {hist.history['loss'][-1]:.5f}, val loss {hist.history['val_loss'][-1]:.5f}")
         ax.plot(hist.history["loss"], label="train")
         ax.plot(hist.history["val_loss"], label="validation")

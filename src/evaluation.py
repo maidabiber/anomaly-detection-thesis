@@ -19,6 +19,14 @@ def apply_continuity_filter(is_anomaly: pd.Series, window: int = 20) -> pd.Serie
 
 
 def first_confirmed_alarm(is_anomaly: pd.Series, window: int = 20) -> pd.Timestamp | None:
+    """First index of `window` consecutive anomaly flags (None if never).
+
+    The window is a persistence filter, not free earliness: with ~10 min
+    between files, window=20 delays every confirmed alarm by ~3h20m after
+    the underlying threshold crossing. Smaller windows alarm earlier but
+    admit transient blips (e.g. the 04.03 startup); the window x rule
+    sweeps exist precisely to price this trade-off.
+    """
     confirmed = apply_continuity_filter(is_anomaly, window=window)
     confirmed_true = confirmed[confirmed]
     if len(confirmed_true) == 0:

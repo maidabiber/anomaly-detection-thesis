@@ -1,0 +1,22 @@
+{
+ "config": {
+  "EPOCHS": 30,
+  "BATCH_SIZE": 32,
+  "VAL_FRACTION": 0.2,
+  "THRESHOLD_METHOD": "mean_std",
+  "THRESHOLD_N_STD": 3.0,
+  "THRESHOLD_PERCENTILE": 99.5,
+  "CONTINUITY_WINDOW": 20,
+  "WINDOW_SIZE": 10,
+  "ENCODING_DIM": 8,
+  "N_RUNS": 3,
+  "SEED_START": 0
+ },
+ "data_hash": null,
+ "extra": {
+  "boundary": "2004-02-16 00:00:00",
+  "bearing": "Bearing_1",
+  "norm": "global",
+  "setup": "with_startup"
+ }
+}
