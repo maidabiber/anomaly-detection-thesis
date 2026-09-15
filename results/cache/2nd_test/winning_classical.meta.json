@@ -12,7 +12,7 @@
   "N_RUNS": 3,
   "SEED_START": 0
  },
- "data_hash": "bccc450603e0c89d57497d6f46bfbccb0d07c93c",
+ "data_hash": null,
  "extra": {
   "boundary": "2004-02-16 00:00:00",
   "window": 10,
