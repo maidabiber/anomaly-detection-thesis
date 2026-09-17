@@ -1,5 +1,5 @@
 model,bearing3_alarm,fpr_val,verdict,delay
-0x16a5f6ec9d0>IsolationForest,2004-04-15 21:52:55,0.0037,true,0 days 06:30:00
+IsolationForest,2004-04-15 21:52:55,0.0037,true,0 days 06:30:00
 OneClassSVM,2004-04-15 16:42:55,0.0074,true,0 days 01:20:00
 LOF,2004-04-15 11:12:55,0.0202,premature (false),None
 PCA,2004-04-15 16:52:55,0.0175,true,0 days 01:30:00

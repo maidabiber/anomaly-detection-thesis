@@ -25,4 +25,4 @@ LSTM_AE,15,0.0076,0,0
 LSTM_AE,20,0.0076,0,0
 CNN,10,0.0000,0,0
 CNN,15,0.0000,0,0
-CNN,20,0.0000,0,0Note: fpr_pre_filter is identical across windows per model (by construction); the empirical finding is the burn_in / healthy_post_burnin split.
+CNN,20,0.0000,0,0
