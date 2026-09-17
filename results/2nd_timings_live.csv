@@ -1,0 +1,9 @@
+scope,model,fit_s,score_s,total_s
+all_36,IsolationForest,0.179,0.015,0.194
+all_36,OneClassSVM,0.001,0.005,0.007
+all_36,LOF,0.025,0.038,0.062
+all_36,PCA,0.002,0.003,0.005
+Bearing_1,IsolationForest,0.145,0.015,0.160
+Bearing_1,OneClassSVM,0.001,0.003,0.005
+Bearing_1,LOF,0.004,0.007,0.011
+Bearing_1,PCA,0.001,0.000,0.001

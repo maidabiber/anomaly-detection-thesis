@@ -1,0 +1,10 @@
+family,model,threshold,first_alarm,fpr_train,fpr_val,verdict,delay
+classical,IsolationForest,0.511451,2004-02-16 23:52:39,0.0296,0.0000,true,1 days 00:30:00
+classical,OneClassSVM,0.155079,2004-02-16 04:42:39,0.0000,0.0000,true,0 days 05:20:00
+classical,LOF,1.244501,2004-02-16 04:42:39,0.0222,0.0198,true,0 days 05:20:00
+classical,PCA,0.120460,2004-02-16 10:52:39,0.0123,0.0099,true,0 days 11:30:00
+deep,AE_1layer,0.053910,2004-02-16 04:42:39,0.0320,0.0198,true,0 days 05:20:00
+deep,AE_2layer,0.045280,2004-02-16 04:42:39,0.0197,0.0000,true,0 days 05:20:00
+deep,AE_3layer,0.050620,2004-02-16 04:42:39,0.0320,0.0198,true,0 days 05:20:00
+deep,LSTM_AE,0.035080,2004-02-12 13:32:39,0.0353,0.0000,premature (false),None
+cnn,CNN,0.002810,2004-02-16 06:12:39,0.0049,0.0000,true,0 days 06:50:00

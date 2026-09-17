@@ -1,0 +1,5 @@
+model,threshold,bearing3_alarm,fpr_val,verdict,delay
+AE_1layer,0.00552,2004-04-15 16:52:55,0.0101,true,0 days 01:30:00
+AE_2layer,0.00708,2004-04-15 16:52:55,0.0092,true,0 days 01:30:00
+AE_3layer,0.01795,2004-04-15 16:52:55,0.0129,true,0 days 01:30:00
+LSTM_AE,0.02119,2004-03-04 21:12:46,0.0101,startup_artefact (false),None
